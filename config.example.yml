@@ -1,0 +1,67 @@
+# ---------------------------------------------------------------------------
+# dsh-codehub — configuration TEMPLATE.
+#
+# Every value below is a placeholder or a built-in default. This file contains
+# NO real credential, NO real host and NO token: credentials live in the DSH
+# credential service or in environment variables (.env.example).
+#
+# Copy to a local file (e.g. `config.local.yml`, which is gitignored) and edit
+# there — never edit this template in place with real values.
+#
+# Keys under `github` / `failover` / `limits` mirror the plugin's settings
+# schema; the four fields listed in DECISION_KEYS (src/contract.ts) are
+# deliberately left EMPTY, because an unanswered decision must never be
+# replaced by a silent default: the tool refuses to run and asks the user.
+# ---------------------------------------------------------------------------
+
+# --- 决策项（留空 = 未决定，工具会先问用户，不做任何网络请求）--------------
+
+# 三个源的查询优先级，数组顺序即优先级。留空 = 未决定。
+# 可选值：github | gitee | csdn
+sourcePriority: []
+# 例：
+# sourcePriority:
+#   - github
+#   - gitee
+#   - csdn
+
+# 多源都命中时是否合并去重（false = 只用最高优先级的那个源）。留空 = 未决定。
+mergeSources: null
+
+github:
+  # GitHub 访问方式优先级。留空 = 未决定。数组顺序即尝试顺序。
+  # 可选值：direct | token | ghproxy | raw-mirror | local-proxy | watt | hosts | third-party-mirror
+  # 注意：ghproxy / raw-mirror / third-party-mirror 这三条路径会被强制剥离 token。
+  accessPriority: []
+  # 例：
+  # accessPriority:
+  #   - direct
+  #   - ghproxy
+  #   - raw-mirror
+
+  # 网页 / API 代理基址（按顺序尝试）。
+  # 刻意不预填真实镜像：列表是你自己的选择，公共公益节点随时可能失效。
+  # 在界面里增删；此处只给形状占位。
+  webProxyBases:
+    - 'https://<your-github-proxy-mirror-base>/'
+
+  # raw 文件镜像基址（本机实测 raw.githubusercontent.com 不可直连，必须依赖此项）。
+  # 同样是占位，不预填真实值。
+  rawMirrorBases:
+    - 'https://<your-raw-mirror-base>/https://raw.githubusercontent.com'
+
+  # 本机代理 / SOCKS5 地址，形如 127.0.0.1:7890。留空 = 不用代理。
+  # 作用范围：仅 Node 直连传输生效（走 DSH 自带 web 通道时由 Harness 出网，插件无法注入代理）。
+  localProxy: ''
+
+failover:
+  # 某个源失败时是否自动降级到下一个源。留空 = 未决定。
+  enabled: null
+
+# --- 硬上限（可下调，不可超过 src/contract.ts 的 HARD_LIMITS）--------------
+limits:
+  timeoutMs: 15000
+  retries: 2
+  maxDepth: 1
+  maxItems: 8
+  maxCodeChars: 4000

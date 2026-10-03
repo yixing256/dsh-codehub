@@ -1,0 +1,75 @@
+{
+  "name": "dsh-codehub",
+  "version": "0.1.0",
+  "description": "DSH 代码用法学习源（code-learning source, not a code copier）— GitHub / Gitee / CSDN 三源检索、深读并产出「学习笔记」，不产出可直接粘贴的代码交付物。",
+  "type": "module",
+  "license": "Apache-2.0",
+  "main": "lib/index.mjs",
+  "types": "lib/types/index.d.ts",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.mjs"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "engines": {
+      "dsh": ">=0.1.5-rc.3"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ],
+      "platform": "web"
+    }
+  },
+  "files": [
+    "lib/**",
+    "src",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "config.example.yml",
+    ".env.example"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && tsdown && node scripts/wrap-client.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "bundle": "tsdown && node scripts/wrap-client.mjs",
+    "smoke": "tsdown --config tsdown.config.ts --filter 'dsh-codehub (smoke script)' && node scripts/.build/smoke.mjs",
+    "watch": "tsdown --watch"
+  },
+  "dependencies": {
+    "schemastery": "^3.18.0"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0"
+  },
+  "devDependencies": {
+    "@tsdown/css": "^0.22.2",
+    "@types/node": "^22.20.0",
+    "@types/react": "~18.3.1",
+    "@types/react-dom": "~18.3.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "schemastery": "^3.18.0",
+    "tsdown": "^0.22.2",
+    "typescript": "~5.7.2",
+    "vitest": "^3"
+  }
+}

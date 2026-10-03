@@ -1,0 +1,32 @@
+# dsh-codehub — pnpm settings.
+#
+# WHY THIS FILE EXISTS (and why there is no `.npmrc` here)
+# -------------------------------------------------------
+# pnpm 11 refuses to run a dependency's install/postinstall script until the
+# package is explicitly allowlisted, and it then fails every `pnpm run <script>`
+# up front with:
+#
+#     [ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: esbuild@0.28.2
+#     Run "pnpm approve-builds" to pick which dependencies should be allowed...
+#
+# tsdown bundles through rollup's native pipeline, which needs `esbuild`'s
+# postinstall to link its platform binary. `pnpm approve-builds` is interactive
+# and therefore useless in CI or a headless shell, so the decision is declared
+# here instead and `pnpm install && pnpm run build` works non-interactively.
+#
+# THE HOME MATTERS — do not "simplify" this into another file:
+#   * pnpm 11 no longer reads the `pnpm` field in package.json for this
+#     (it warns and ignores it).
+#   * pnpm 11 reads only auth/registry settings from `.npmrc`; every other
+#     setting moved to pnpm-workspace.yaml.
+#   * `allowBuilds` is the current name. The older `onlyBuiltDependencies`,
+#     `onlyBuiltDependenciesFile`, `neverBuiltDependencies` and
+#     `ignoredBuiltDependencies` were replaced by it and have been silently
+#     ignored since pnpm 11.
+# https://pnpm.io/settings  ·  https://pnpm.io/blog/releases/11.0
+#
+# Values are a map of package matcher -> allow (true) / deny (false). Packages
+# absent from the map are disallowed by default, so a new dependency that needs
+# a build script must be added here deliberately.
+allowBuilds:
+  esbuild: true

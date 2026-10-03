@@ -1,0 +1,35 @@
+{
+  // dsh-codehub — build tsconfig: declarations for src/ -> lib/types/.
+  //
+  // Runs first in `pnpm run build` (`tsc -p tsconfig.build.json && tsdown`), so
+  // lib/types/index.d.ts and lib/types/client/index.d.ts exist before tsdown
+  // writes the JS bundles. tsdown is configured with `clean: false` for exactly
+  // this reason — a clean pass would delete lib/types.
+  //
+  // Only src/ is emitted; `types` is included so the ambient `@deepseek-ai/*`
+  // module declarations stay in scope (declare-only file, never emitted, so
+  // rootDir does not complain about it).
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "declaration": true,
+    "declarationMap": false,
+    "sourceMap": false,
+    "rootDir": "src",
+    "outDir": "lib/types",
+    // Emit declarations even while some file has a type error.
+    //
+    // Rationale: `build` is `tsc -p tsconfig.build.json && tsdown`, so a single
+    // type error used to abort before tsdown ever ran — leaving the JS bundle
+    // pipeline (rolldown, the @tsdown/css plugin, the client externals) untested
+    // and making it impossible to tell a TYPE failure from a BUNDLING failure.
+    // With this set, tsdown always runs and reports its own errors separately.
+    //
+    // This does NOT weaken the gate: `pnpm run typecheck` (tsc --noEmit) stays
+    // strict and is the authority on correctness. This only decouples the two
+    // failure modes so they can be diagnosed independently.
+    "noEmitOnError": false
+  },
+  "include": ["src", "types"]
+}

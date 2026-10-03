@@ -1,0 +1,54 @@
+{
+  // dsh-codehub — development tsconfig (typecheck everything, emit nothing).
+  //
+  // The SDK shim wiring is the important part here:
+  //   `@deepseek-ai/*` packages are NOT installed on disk in this deployment —
+  //   they live unreadably inside the DSH app.asar. `types/dsh/index.d.ts`
+  //   re-declares them with `declare module`, so that file MUST be part of the
+  //   program. Because it is a global (non-module) .d.ts, listing `types` in
+  //   `include` puts those ambient module declarations in scope for every file
+  //   in the project. Do NOT replace this with a `paths` mapping to the shim:
+  //   one file declares many modules, which `paths` cannot express.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "moduleDetection": "force",
+
+    // Browser half uses the automatic JSX runtime (no React import needed).
+    "jsx": "react-jsx",
+
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+
+    // DELIBERATELY NOT SET: `allowImportingTsExtensions`.
+    //
+    // It looks harmless because noEmit is on here, but it breaks the BUILD:
+    // `allowImportingTsExtensions` is only legal under noEmit/emitDeclarationOnly
+    // (TS5096). tsconfig.build.json turns on emitDeclarationOnly, so the option
+    // would be tolerated there — but declaration emit does NOT rewrite `.ts`
+    // import specifiers to `.js`. The published lib/types/**/*.d.ts would then
+    // re-export from './contract.ts', which resolves to nothing for any
+    // consumer. (rewriteRelativeImportExtensions does not help: TS only rewrites
+    // in JavaScript-emitting passes, not in declaration emit.)
+    //
+    // Rule for this repo, matching every shipping DSH plugin: relative imports
+    // between TypeScript modules use the `.js` specifier (`./x.js`), which is
+    // NodeNext-correct and survives declaration emit. tsdown/rolldown resolves
+    // `./x.js` back to `./x.ts` at bundle time, so no module is ever lost.
+    "resolveJsonModule": true,
+
+    // Node types only. React types arrive through module resolution
+    // (`import ... from 'react'`), not through the global type roots.
+    "types": ["node"],
+    "typeRoots": ["./node_modules/@types", "./types"]
+  },
+  "include": ["src", "test", "types", "tsdown.config.ts", "vitest.config.ts"]
+}

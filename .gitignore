@@ -1,0 +1,42 @@
+# ---------------------------------------------------------------------------
+# dsh-codehub — never commit build output, dependencies, or credentials.
+# The list below is frozen by the project brief: do not drop entries.
+# ---------------------------------------------------------------------------
+
+# Dependencies and build output
+node_modules/
+lib/
+dist/
+coverage/
+
+# Logs
+*.log
+
+# Credentials and machine-local configuration — MUST NEVER BE COMMITTED
+.env
+.env.*
+*.token
+*.key
+*.pem
+credentials.json
+user-config.local.json
+*.local.yml
+secrets.*
+
+# Additional local-only files
+*.local.json
+
+# Editor / tooling scratch
+*.tsbuildinfo
+.DS_Store
+
+# Bundled dev scripts (scripts/smoke.ts is compiled here by `pnpm run smoke`)
+scripts/.build/
+
+# ---------------------------------------------------------------------------
+# Exceptions (added on purpose, do not remove).
+# `.env.*` above would otherwise swallow the checked-in template, and the
+# template is a shipped file (see package.json "files"). It carries empty
+# placeholders only — never a real value.
+# ---------------------------------------------------------------------------
+!.env.example

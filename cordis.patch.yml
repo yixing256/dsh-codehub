@@ -1,0 +1,15 @@
+# dsh-codehub — Cordis profile bundle patch.
+#
+# This file is referenced by package.json -> "dsh".bundle.patch and is applied by
+# the DSH plugin loader when the bundle is installed into a profile.
+#
+# It MUST stay a top-level YAML SEQUENCE (a list of patch operations). An empty
+# file, or a file holding only comments, parses to `null` and the DSH loader
+# rejects it — so the `- insert:` item below is load-bearing, not decoration.
+#
+# `insert` appends the plugin row to the profile's plugin list. `id` and `name`
+# are both the packaged plugin name; they must never be aliased or renamed
+# (see src/contract.ts: PACKAGE_NAME / SETTINGS_NAMESPACE).
+- insert:
+    - id: dsh-codehub
+      name: dsh-codehub
