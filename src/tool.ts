@@ -146,111 +146,164 @@ function readArgs(raw: unknown): LearnCodeArgs {
 
 // ---------------------------------------------------------------------------
 // Output schema — full JSON-Schema object form, `additionalProperties: false`,
-// every property `required: true`, nullable values as `oneOf`.
+// nullable values as `oneOf`.
+//
+// REQUIRED LIVES IN *BOTH* PLACES, AND THAT IS DELIBERATE.
+// -------------------------------------------------------
+// The runtime's schema validator REJECTS the sugar `required: true` on a
+// property of an `output.schema`, and the rejection fails the whole tool
+// registration:
+//
+//   unsupported JSON schema: schema.properties.ok.required is not supported on
+//   type "boolean"; schema.properties.query.required is not supported on type
+//   "string"; ...
+//
+// So the authoritative form is the top-level `required: [...]` name array (plain
+// JSON Schema), built from `REQUIRED` below. The per-property `required: true`
+// markers are kept as well, but ONLY as an internal fact that `requiredNames()`
+// derives the array from — they live in local records that are never handed to
+// the runtime, so they cannot reach the validator and cannot drift from the
+// array.
+//
+// Note this differs from the `parameters` sugar DSL, where per-property
+// `required: true` IS accepted.
 // ---------------------------------------------------------------------------
 
-function required(spec: ParamSpec): ParamSpec {
-  return { ...spec, required: true }
+// ---------------------------------------------------------------------------
+// Output schema — plain JSON-Schema object form, `additionalProperties: false`,
+// nullable values as `oneOf`.
+//
+// REQUIRED IS AN ARRAY HERE, NOT THE SUGAR FLAG.
+// ---------------------------------------------
+// The runtime's schema validator REJECTS the sugar `required: true` on a
+// property of an `output.schema`, and that rejection fails the ENTIRE tool
+// registration (the tool silently never appears):
+//
+//   unsupported JSON schema: schema.properties.ok.required is not supported on
+//   type "boolean"; schema.properties.query.required is not supported on type
+//   "string"; ...
+//
+// So every object in this tree uses the plain form: a top-level
+// `required: [names]` array. The `required: true` markers on the `*_PROPERTIES`
+// records below are kept ONLY as an internal, source-visible fact — those
+// records hold `ObjectSchema` values and the marker is stripped before the
+// schema object is built, because an unknown `required` key on a property spec
+// is exactly what the validator rejects. `requiredNames()` derives the array
+// from the same records, so the two cannot drift.
+//
+// Note this differs from the `parameters` sugar DSL, where per-property
+// `required: true` IS accepted.
+// ---------------------------------------------------------------------------
+
+/** Property names marked `required` in a local property record. */
+function requiredNames(properties: Record<string, ParamSpec>): readonly string[] {
+  return Object.entries(properties).filter(([, spec]) => spec.required === true).map(([key]) => key)
 }
 
-const RESULT_SCHEMA: ParamSpec = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    source: required({ type: 'string', enum: SOURCES, description: '命中的源。' }),
-    url: required({ type: 'string', description: '可直接打开的来源地址。' }),
-    title: required({ type: 'string' }),
-    language: required({ type: 'string', description: '识别到的语言；未知时为空字符串。' }),
-    code: required({
-      type: 'string',
-      description: `仅作学习参考的节选，首行固定是「${LEARNING_ONLY_BANNER}」，长度不超过用户配置的 maxCodeChars。`,
+/**
+ * Strip the internal `required` marker from every property spec.
+ *
+ * The marker must NOT reach the runtime: `required` on a property of an
+ * `output.schema` is the exact construct the validator rejects. It is only ever
+ * read back by `requiredNames()`.
+ */
+function stripRequired(properties: Record<string, ParamSpec>): Record<string, ParamSpec> {
+  return Object.fromEntries(
+    Object.entries(properties).map(([key, spec]) => {
+      const { required: _marker, ...rest } = spec
+      return [key, rest]
     }),
-    codeTruncated: required({ type: 'boolean', description: '节选是否因超限被截断。' }),
-    learned_summary: required({ type: 'string', description: '提炼出的思路 / 用法 / 取舍 / 坑。不是代码的改写。' }),
-    is_verbatim_copy: required({
-      type: 'boolean',
-      const: false,
-      description: '结构上恒为 false：本工具不存在「返回可直接粘贴的代码」这种结果。',
-    }),
-    stars: required({ oneOf: [{ type: 'integer' }, { type: 'null' }], description: '来源给出的星标数，未知时 null。' }),
-    updatedAt: required({ oneOf: [{ type: 'string' }, { type: 'null' }], description: 'ISO-8601 更新时间，未知时 null。' }),
-    confidence: required({ type: 'string', enum: CONFIDENCE_LEVELS }),
-    reason: required({ type: 'string', description: '这一条为什么出现、置信度为什么是这样。' }),
-  },
+  )
 }
 
-const NOTE_SCHEMA: ParamSpec = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    url: required({ type: 'string' }),
-    title: required({ type: 'string' }),
-    approach: required({ type: 'string', description: '实现思路（散文），不是源码。' }),
-    apiContract: required({ type: 'array', items: { type: 'string' } }),
-    tradeoffs: required({ type: 'array', items: { type: 'string' } }),
-    pitfalls: required({ type: 'array', items: { type: 'string' } }),
-    sourceUrls: required({ type: 'array', items: { type: 'string' }, description: '每条结论的来源地址，保持可追溯。' }),
-  },
+/** Build one object schema with `required` hoisted to the array form. */
+function objectSchema(properties: Record<string, ParamSpec>): ObjectSchema {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    required: requiredNames(properties),
+    properties: stripRequired(properties),
+  }
 }
 
-const FAILURE_SCHEMA: ParamSpec = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    source: required({ type: 'string', enum: SOURCES }),
-    kind: required({ type: 'string', enum: FAILURE_KINDS }),
-    reason: required({ type: 'string' }),
+const RESULT_PROPERTIES: Record<string, ParamSpec> = {
+  source: { type: 'string', enum: SOURCES, required: true, description: '命中的源。' },
+  url: { type: 'string', required: true, description: '可直接打开的来源地址。' },
+  title: { type: 'string', required: true },
+  language: { type: 'string', required: true, description: '识别到的语言；未知时为空字符串。' },
+  code: {
+    type: 'string',
+    required: true,
+    description: `仅作学习参考的节选，首行固定是「${LEARNING_ONLY_BANNER}」，长度不超过用户配置的 maxCodeChars。`,
   },
+  codeTruncated: { type: 'boolean', required: true, description: '节选是否因超限被截断。' },
+  learned_summary: { type: 'string', required: true, description: '提炼出的思路 / 用法 / 取舍 / 坑。不是代码的改写。' },
+  is_verbatim_copy: {
+    type: 'boolean',
+    required: true,
+    const: false,
+    description: '结构上恒为 false：本工具不存在「返回可直接粘贴的代码」这种结果。',
+  },
+  stars: { oneOf: [{ type: 'integer' }, { type: 'null' }], required: true, description: '来源给出的星标数，未知时 null。' },
+  updatedAt: { oneOf: [{ type: 'string' }, { type: 'null' }], required: true, description: 'ISO-8601 更新时间，未知时 null。' },
+  confidence: { type: 'string', enum: CONFIDENCE_LEVELS, required: true },
+  reason: { type: 'string', required: true, description: '这一条为什么出现、置信度为什么是这样。' },
 }
 
-const DECISION_SCHEMA: ParamSpec = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    key: required({ type: 'string', enum: DECISION_KEYS }),
-    detail: required({ type: 'string' }),
-    ask: required({ type: 'string', description: '可以直接转述给用户的问题。' }),
-    control: required({ type: 'string', description: '告诉用户去哪里点。' }),
-  },
+const RESULT_SCHEMA: ObjectSchema = objectSchema(RESULT_PROPERTIES)
+
+const NOTE_PROPERTIES: Record<string, ParamSpec> = {
+  url: { type: 'string', required: true },
+  title: { type: 'string', required: true },
+  approach: { type: 'string', required: true, description: '实现思路（散文），不是源码。' },
+  apiContract: { type: 'array', required: true, items: { type: 'string' } },
+  tradeoffs: { type: 'array', required: true, items: { type: 'string' } },
+  pitfalls: { type: 'array', required: true, items: { type: 'string' } },
+  sourceUrls: { type: 'array', required: true, items: { type: 'string' }, description: '每条结论的来源地址，保持可追溯。' },
 }
+
+const NOTE_SCHEMA: ObjectSchema = objectSchema(NOTE_PROPERTIES)
+
+const FAILURE_PROPERTIES: Record<string, ParamSpec> = {
+  source: { type: 'string', enum: SOURCES, required: true },
+  kind: { type: 'string', enum: FAILURE_KINDS, required: true },
+  reason: { type: 'string', required: true },
+}
+
+const FAILURE_SCHEMA: ObjectSchema = objectSchema(FAILURE_PROPERTIES)
+
+const DECISION_PROPERTIES: Record<string, ParamSpec> = {
+  key: { type: 'string', enum: DECISION_KEYS, required: true },
+  detail: { type: 'string', required: true },
+  ask: { type: 'string', required: true, description: '可以直接转述给用户的问题。' },
+  control: { type: 'string', required: true, description: '告诉用户去哪里点。' },
+}
+
+const DECISION_SCHEMA: ObjectSchema = objectSchema(DECISION_PROPERTIES)
 
 /** The complete output schema. `ok:false` payloads use the same shape. */
-export const LEARN_CODE_OUTPUT_SCHEMA: ObjectSchema = {
-  type: 'object',
-  additionalProperties: false,
-  required: [
-    'ok',
-    'query',
-    'results',
-    'notes',
-    'failures',
-    'unresolved_decisions',
-    'ask_user',
-    'reason',
-    'degraded',
-    'merged',
-    'sources_queried',
-    'deep_read',
-  ],
-  properties: {
-    ok: required({ type: 'boolean', description: 'false = 业务性拒绝（未决策 / 已禁用 / 无结果），详见 reason 与 ask_user。' }),
-    query: required({ type: 'string' }),
-    results: required({ type: 'array', items: RESULT_SCHEMA }),
-    notes: required({ type: 'array', items: NOTE_SCHEMA, description: '深度阅读产出的思路笔记（可能为空）。' }),
-    failures: required({ type: 'array', items: FAILURE_SCHEMA, description: '每个失败源及其分类。' }),
-    unresolved_decisions: required({
-      type: 'array',
-      items: DECISION_SCHEMA,
-      description: '未确认的决策点；非空时 ok 必为 false，且未发起任何网络请求。',
-    }),
-    ask_user: required({ type: 'string', description: '要转述给用户的问题；ok 为 true 时是空字符串。' }),
-    reason: required({ type: 'string' }),
-    degraded: required({ type: 'boolean', description: '是否因用户已同意自动降级而切换过源。' }),
-    merged: required({ type: 'boolean', description: '结果是否来自多源合并去重。' }),
-    sources_queried: required({ type: 'array', items: { type: 'string', enum: SOURCES } }),
-    deep_read: required({ type: 'boolean', description: '本次是否真的产出了深度阅读笔记。' }),
+const OUTPUT_PROPERTIES: Record<string, ParamSpec> = {
+  ok: { type: 'boolean', required: true, description: 'false = 业务性拒绝（未决策 / 已禁用 / 无结果），详见 reason 与 ask_user。' },
+  query: { type: 'string', required: true },
+  results: { type: 'array', required: true, items: RESULT_SCHEMA },
+  notes: { type: 'array', required: true, items: NOTE_SCHEMA, description: '深度阅读产出的思路笔记（可能为空）。' },
+  failures: { type: 'array', required: true, items: FAILURE_SCHEMA, description: '每个失败源及其分类。' },
+  unresolved_decisions: {
+    type: 'array',
+    required: true,
+    items: DECISION_SCHEMA,
+    description: '未确认的决策点；非空时 ok 必为 false，且未发起任何网络请求。',
   },
+  ask_user: { type: 'string', required: true, description: '要转述给用户的问题；ok 为 true 时是空字符串。' },
+  reason: { type: 'string', required: true },
+  degraded: { type: 'boolean', required: true, description: '是否因用户已同意自动降级而切换过源。' },
+  merged: { type: 'boolean', required: true, description: '结果是否来自多源合并去重。' },
+  sources_queried: { type: 'array', required: true, items: { type: 'string', enum: SOURCES } },
+  deep_read: { type: 'boolean', required: true, description: '本次是否真的产出了深度阅读笔记。' },
 }
+
+export const LEARN_CODE_OUTPUT_SCHEMA: ObjectSchema = objectSchema(OUTPUT_PROPERTIES)
+
 
 // ---------------------------------------------------------------------------
 // Render.

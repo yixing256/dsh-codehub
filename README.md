@@ -85,19 +85,28 @@ readonly is_verbatim_copy: false
 pnpm install
 pnpm run typecheck   # tsc --noEmit，严格模式，是正确性的权威门禁
 pnpm run build       # tsc 声明产物 + tsdown 双入口 + scripts/wrap-client.mjs
-pnpm test            # vitest —— 246 例
+pnpm test            # vitest —— 247 例
 pnpm run verify      # 对构建产物做交付验收（需先 build）
+pnpm run boot-check  # 真实启动一个 profile，确认插件真的挂上（见下）
 pnpm run smoke       # 真实端点连通性读数（需网络，刻意不进 test）
 ```
 
-四者的分工不要混：
+各命令的分工不要混：
 
 | 命令 | 回答的问题 | 会漏掉什么 |
 |---|---|---|
 | `typecheck` | 类型对不对 | 运行期行为 |
-| `test` | 行为对不对（246 例，**零网络**） | **类型错误**（vitest 只转译不做类型检查） |
+| `test` | 行为对不对（247 例，**零网络**） | **类型错误**（vitest 只转译不做类型检查） |
 | `verify` | **产物**里该有的东西在不在 | 逻辑正确性 |
+| `boot-check` | 插件在**真实加载器**里能不能挂上 | 无断言，只给读数 |
 | `smoke` | 真端点通不通 | 无断言，只给读数 |
+
+> **为什么必须有 `boot-check`**：本插件曾在 `typecheck` / `build` / `test` **全绿**的情况下
+> 于真机上完全不可用 —— `learn_code_from_web` 的 `output.schema` 用了语法糖
+> `required: true`，而运行时的 schema 校验器**拒绝**该写法并**中止整个工具注册**。
+> 单测全部注入假 transport、从不经过真实加载器，所以完全看不到。
+> **只有真启动会走那道校验。** 改动工具 schema、插槽注册或服务挂载后，请跑一次
+> `pnpm run boot-check <profile>`。
 
 `pnpm test` 与 `pnpm typecheck` **不可互相替代**：`@ts-expect-error` 的「是否被使用」、`satisfies` 是否成立、`readonly` 违规这三类防线**只有 typecheck 守**（esbuild 转译会把它们全擦掉），而运行期断言只有 test 守。
 

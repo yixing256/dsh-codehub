@@ -76,18 +76,23 @@ declare module '@deepseek-ai/dsh-tools' {
     required?: boolean
     enum?: readonly unknown[]
     const?: unknown
-    items?: ParamSpec
+    /** A nested object schema, or a plain spec. */
+    items?: ParamSpec | ObjectSchema
     oneOf?: readonly ParamSpec[]
-    properties?: Record<string, ParamSpec>
+    properties?: Record<string, ParamSpec | ObjectSchema>
     additionalProperties?: boolean
   }
 
-  /** The full JSON-Schema object form, used for `output.schema`. */
-  export interface ObjectSchema {
+  /** The full JSON-Schema object form, used for `output.schema`.
+   *
+   *  `required` is an ARRAY OF PROPERTY NAMES here, not the sugar boolean.
+   *  Writing `required: true` on a property of an `output.schema` fails the
+   *  whole tool registration with `unsupported JSON schema:
+   *  schema.properties.<name>.required is not supported on type "<type>"`. */
+  export interface ObjectSchema extends Omit<ParamSpec, 'type' | 'required' | 'items'> {
     type: 'object'
-    additionalProperties?: boolean
-    properties?: Record<string, ParamSpec>
     required?: readonly string[]
+    items?: ParamSpec | ObjectSchema
   }
 
   export interface ToolDefinition {

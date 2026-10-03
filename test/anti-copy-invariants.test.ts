@@ -26,6 +26,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { CodeLearnResult } from '../src/contract.js'
 import { LEARN_CODE_OUTPUT_SCHEMA, LEARN_CODE_TOOL } from '../src/tool.js'
+import type { ObjectSchema } from '@deepseek-ai/dsh-tools'
 import {
   codeLinesContaining,
   isCommentLine,
@@ -90,7 +91,11 @@ describe('防搬运 — src/ 全树扫描', () => {
     expect(sites.length).toBeGreaterThanOrEqual(6)
 
     const offenders = sites.filter(
-      (hit) => !/is_verbatim_copy\s*:\s*(?:false\b|required\()/.test(hit.text),
+      // A site is legitimate when it pins the literal `false`, or when it is a
+      // schema DECLARATION whose `const: false` is asserted elsewhere in this
+      // file (`is_verbatim_copy: {` … `const: false`). A bare `is_verbatim_copy:
+      // true` can never match and is caught by the scan above.
+      (hit) => !/is_verbatim_copy\s*:\s*(?:false\b|required\(|\{)/.test(hit.text),
     )
     expect(offenders).toEqual([])
   })
@@ -124,12 +129,35 @@ describe('防搬运 — 工具输出 schema 钉死', () => {
     expect(LEARN_CODE_OUTPUT_SCHEMA.additionalProperties).toBe(false)
   })
 
-  it('顶层每个属性都是 required，且 required 列表与 properties 一一对应', () => {
+  it('顶层每个属性都在 required 数组里，且 required 与 properties 一一对应', () => {
     const properties = LEARN_CODE_OUTPUT_SCHEMA.properties ?? {}
-    for (const [key, spec] of Object.entries(properties)) {
-      expect(spec.required, `${key} 必须 required:true`).toBe(true)
-    }
+    // `required` is an ARRAY of names in an output schema, NOT per-property
+    // `required: true`. The runtime's validator rejects a boolean `required` on
+    // a property of an output schema and fails the ENTIRE tool registration
+    // ("unsupported JSON schema: schema.properties.<name>.required is not
+    // supported on type \"<type>\""), so the array form is the only correct one
+    // — asserting the sugar form here would assert a schema that cannot load.
     expect([...(LEARN_CODE_OUTPUT_SCHEMA.required ?? [])].sort()).toEqual(Object.keys(properties).sort())
+    // ...and no property spec may smuggle the rejected boolean back in.
+    for (const [key, spec] of Object.entries(properties)) {
+      expect(spec, `${key} 不得带属性级 required（运行时会拒绝整个 schema）`).not.toHaveProperty('required')
+    }
+  })
+
+  it('嵌套对象同样用 required 数组，而不是属性级 required', () => {
+    const item = LEARN_CODE_OUTPUT_SCHEMA.properties?.['results']?.items
+    if (item === undefined) throw new Error('results.items 缺失')
+    // This test asserts schema SHAPE, so it needs the object form. TypeScript
+    // will not narrow `ParamSpec | ObjectSchema` (the two overlap and `required`
+    // is optional on both), hence the assertion — which the runtime checks below
+    // immediately justify by asserting the actual shape.
+    const objectItem = item as ObjectSchema
+    expect(objectItem.type).toBe('object')
+    expect(Array.isArray(objectItem.required)).toBe(true)
+    expect([...(objectItem.required ?? [])].sort()).toEqual(Object.keys(objectItem.properties ?? {}).sort())
+    for (const [key, spec] of Object.entries(objectItem.properties ?? {})) {
+      expect(spec, `${key} 不得带属性级 required`).not.toHaveProperty('required')
+    }
   })
 
   it('可空字段用 oneOf + null，不伪造 0 或空串', () => {
