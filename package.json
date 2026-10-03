@@ -50,6 +50,7 @@
     "build": "tsc -p tsconfig.build.json && tsdown && node scripts/wrap-client.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "verify": "node scripts/verify-artifacts.mjs",
     "bundle": "tsdown && node scripts/wrap-client.mjs",
     "smoke": "tsdown --config tsdown.config.ts --filter 'dsh-codehub (smoke script)' && node scripts/.build/smoke.mjs",
     "watch": "tsdown --watch"

@@ -85,8 +85,21 @@ readonly is_verbatim_copy: false
 pnpm install
 pnpm run typecheck   # tsc --noEmit，严格模式，是正确性的权威门禁
 pnpm run build       # tsc 声明产物 + tsdown 双入口 + scripts/wrap-client.mjs
-pnpm test            # vitest
+pnpm test            # vitest —— 246 例
+pnpm run verify      # 对构建产物做交付验收（需先 build）
+pnpm run smoke       # 真实端点连通性读数（需网络，刻意不进 test）
 ```
+
+四者的分工不要混：
+
+| 命令 | 回答的问题 | 会漏掉什么 |
+|---|---|---|
+| `typecheck` | 类型对不对 | 运行期行为 |
+| `test` | 行为对不对（246 例，**零网络**） | **类型错误**（vitest 只转译不做类型检查） |
+| `verify` | **产物**里该有的东西在不在 | 逻辑正确性 |
+| `smoke` | 真端点通不通 | 无断言，只给读数 |
+
+`pnpm test` 与 `pnpm typecheck` **不可互相替代**：`@ts-expect-error` 的「是否被使用」、`satisfies` 是否成立、`readonly` 违规这三类防线**只有 typecheck 守**（esbuild 转译会把它们全擦掉），而运行期断言只有 test 守。
 
 `build` 三步各有分工，不要跳过第三步：`tsdown` 把客户端半边编成 CommonJS 中间产物，
 `scripts/wrap-client.mjs` 再把它包进 DSH 客户端模块加载器要求的
