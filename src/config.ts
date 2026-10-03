@@ -33,7 +33,22 @@
  * reaches the derived settings form without a second hand-written copy.
  */
 
-import Schema from 'schemastery'
+/**
+ * `@deepseek-ai/schemastery`, NOT the unscoped `schemastery`.
+ *
+ * They are different packages: upstream `schemastery` tops out at 3.18.0, while
+ * DSH publishes its own fork at 3.18.2 — and that fork is what
+ * `@deepseek-ai/dsh-tools` depends on. Importing the unscoped package made this
+ * plugin's schema a DIFFERENT `Schema` type from the one the SDK uses, so
+ * TypeScript resolved the schema's inferred type through the fork's pnpm store
+ * path and declaration emit failed with TS2742 ("cannot be named without a
+ * reference to .pnpm/@deepseek-ai+schemastery@3.18.2/...").
+ *
+ * Shipping host plugins import the fork (`dsh-context` does), and it is also the
+ * package carrying the `role(...)` secret-field support DSH's settings surface
+ * understands. Declared as a peer dependency: the host provides it.
+ */
+import Schema from '@deepseek-ai/schemastery'
 
 import {
   CSDN_API_NOTE,

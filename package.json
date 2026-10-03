@@ -55,20 +55,37 @@
     "smoke": "tsdown --config tsdown.config.ts --filter 'dsh-codehub (smoke script)' && node scripts/.build/smoke.mjs",
     "watch": "tsdown --watch"
   },
-  "dependencies": {
-    "schemastery": "^3.18.0"
-  },
+  "dependencies": {},
   "peerDependencies": {
-    "react": "^18.2.0"
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-client-ui-primitives": ">=0.1.5-rc.1",
+    "@deepseek-ai/dsh-host-webserver": ">=0.1.5-rc.1",
+    "@deepseek-ai/dsh-settings": ">=0.1.5-rc.1",
+    "@deepseek-ai/dsh-system-prompt": ">=0.1.5-rc.1",
+    "@deepseek-ai/dsh-tools": ">=0.1.5-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-client-ui-primitives": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
   },
   "devDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.2",
     "@tsdown/css": "^0.22.2",
     "@types/node": "^22.20.0",
     "@types/react": "~18.3.1",
     "@types/react-dom": "~18.3.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "schemastery": "^3.18.0",
     "tsdown": "^0.22.2",
     "typescript": "~5.7.2",
     "vitest": "^3"
