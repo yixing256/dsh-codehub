@@ -54,8 +54,25 @@ import type { SettingsCardProps } from './settings-card.js'
 /**
  * The services this bundle needs. Declared as a NAMED export — the loader reads
  * it before calling `apply`.
+ *
+ * `settingsScope` is DELIBERATELY NOT LISTED, and adding it back HARD-FAILS THE
+ * WHOLE BOOT.
+ *
+ * The loader treats `inject` as a hard requirement: an entry still waiting for a
+ * named service never activates, and a profile with an unactivated entry aborts
+ * with `web boot: 1 entry did not activate` /
+ * `dsh-codehub: pending (waiting for service: settingsScope)`. On this runtime
+ * `settingsScope` is not in the client service roster at all (observed:
+ * layout / locale / sessions / slots / theme / timer / uiWorkspace / workspaces),
+ * so the entry would wait forever.
+ *
+ * It is also unnecessary: `attachSettings()` below treats the settings mirror as
+ * an optional enhancement — it probes `webUiSettings`, then falls back to a
+ * property read, and otherwise logs and continues with the plugin's own
+ * `/api/dsh-codehub/config` route as the only config path. A hard dependency on
+ * a service that may not exist is exactly the wrong shape for that.
  */
-export const inject: string[] = ['slots', 'locale', 'settingsScope']
+export const inject: string[] = ['slots', 'locale']
 
 /** The seat id shared by the panellist entry, the `main` key and settings form. */
 const PANEL_ID = 'codehub'
