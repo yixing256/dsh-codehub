@@ -37,7 +37,6 @@
 使用这个插件**不需要** `pnpm install`，也**不需要**构建：
 
 - DSH 直接加载已发布的 `lib/` 产物（`lib/index.mjs` 为 host 入口，`lib/client.js` 为 web 客户端入口）。
-- 仓库里的 `node_modules/`、`lib/` 属于开发期产物，已被 `.gitignore` 忽略。
 - Node 版本要求：`^22.19.0 || >=24.0.0`（本机实测 v24.19.0）。
 
 ### 装进 DSH
@@ -95,9 +94,6 @@ pnpm run smoke       # 真实端点连通性读数（需网络，刻意不进 te
 > 现在：图标由插件自己画（`src/client/icon.tsx`），SDK shim 不再声明任何 `Icon*`，
 > `verify:sdk` 直接读 `app.asar` 里的真包逐个核对，座位外面还套了渲染护栏
 > （`src/client/error-boundary.tsx`），出错时显示可读信息而不是空白。
->
-> **为什么必须有 `boot-check`**：本插件还曾在同一种「全绿但真机不可用」里栽过 —— `learn_code_from_web`
-> 的 `output.schema` 用了语法糖 `required: true`，而运行时的 schema 校验器**拒绝**该写法并
 > **中止整个工具注册**。单测全部注入假 transport、从不经过真实加载器，所以完全看不到。
 > **只有真启动会走那道校验。** 改动工具 schema、插槽注册或服务挂载后，请跑一次
 > `pnpm run boot-check <profile>`。
@@ -136,13 +132,12 @@ loader 真正实例化时才执行 —— 这也意味着 `require(...)` 调用�
 | `dsh-web` | Harness 自带的 web 服务（**默认优先**） | **否** —— 出网由 DSH 负责 |
 | `node` | 本插件进程内的 `fetch` | **是** —— 代理在这里生效 |
 
-> **注意作用域的实际后果**：`node` 通道在**当前这台机器**上时通时不通（见「已验证事实」的两次
 > 实测对比），所以本机代理设置在这里**不保证产生效果**：只有 `node` 通道真的能出网时它才有意义。
 > 插件不会为了「让代理生效」而偷偷改走别的通道。
 
 配置项是 `github.localProxy`，单个地址字符串。**协议从地址本身解析，没有独立字段**：
 
-| 你填 | 解析为 |
+ 解析为 |
 |---|---|
 | `127.0.0.1:7890` | `http://127.0.0.1:7890`（无协议前缀时按 HTTP 处理） |
 | `http://host:port` | HTTP 代理 |
@@ -179,31 +174,6 @@ loader 真正实例化时才执行 —— 这也意味着 `require(...)` 调用�
 **token 与镜像互斥是硬约束**，不是界面提示：把长期凭据交给第三方转发站就是凭据泄露，所以
 镜像路径会在构造请求时被强制剥离 token。
 
----
-
-## 已验证事实
-
-本机（Windows + Node v24.19.0）实测结论，写死在此以免后人重复踩坑。
-
-### 最重要的一条：这台机器上 `node` 直连通道**完全没有出网能力**
-
-用 `scripts/smoke.ts`（`pnpm run smoke`）打真实端点，**三个源全部失败**：
-
-```
-[github] ok=false results=0 failure=network   — 网络请求失败：fetch failed
-[gitee]  ok=false results=0 failure=network   — 网络请求失败：fetch failed
-[csdn]   ok=false results=0 failure=network   — 网络请求失败：fetch failed
-```
-
-而**同一台机器上** Harness 自己的 `web_fetch`（即 `dsh-web` 通道）能拿到
-`api.github.com` 返回 HTTP 200。结论：
-
-> **`dsh-web` 是本机唯一可用的出网通道。** 插件默认优先 `dsh-web`、失败才回落 `node`
-> 的设计因此不是偏好问题，而是**本机的硬约束**。
-
-这直接解释了「本机代理」为什么不重要：代理设置只作用于 `node` 通道，而 `node` 通道在这
-台机器上根本不出去。反过来说，**如果你在别的机器上 `node` 通道可用，代理设置才有意义**。
-
 ### 端点可达性
 
 | 目标 | 经 `dsh-web` 通道 | 经 `node` 直连 |
@@ -215,26 +185,8 @@ loader 真正实例化时才执行 —— 这也意味着 `require(...)` 调用�
 
 ### 接口形态（与可达性无关，是服务端行为）
 
-| 端点 | 实测结果 |
-| --- | --- |
-| `gitee.com/api/v5/projects?q=...` | 返回 **404** —— 该接口不存在，禁止为它编造响应字段 |
-| `gitee.com/api/v5/search/repositories?q=...` | HTTP 200，但**匿名返回空数组**（需 token） |
-| `so.csdn.net/api/v3/search?...` | HTTP 200，`result_vos[]` 有真实数据 |
-
 > Gitee 的搜索接口是 `/search/repositories` 与 `/search/code`（需 `access_token`）。
 > 网上常见资料里写的 `/api/v5/projects?q=...` 实测为 **404**，本插件不使用它。
-
-### 怎么复核这些结论
-
-```bash
-pnpm run smoke
-```
-
-该脚本**刻意不进 `pnpm test`**：它依赖网络、会被限流、并打一个非公开 API。它输出的是
-**读数而非断言** —— 失败可能意味着端点搬了、机器离线或没配凭据，这些都是有用的事实而不是
-构建坏了。
-
----
 
 ## 决策点：插件永不替你拍板
 
@@ -291,7 +243,7 @@ pnpm run smoke
 |---|---|---|---|
 | GitHub | **能**（设备码流程，不需要 client_secret） | 在你自己账号下建一个 OAuth App，**勾选 Enable Device Flow**，把 Client ID 填进插件；点「浏览器登录」后会出现一个 8 位用户码，在 `https://github.com/login/device` 输入即可 | 个人访问令牌（fine-grained 预填链接，读公开内容无需任何权限） |
 | Gitee | **能，但必须 client_secret**（Gitee 不支持 PKCE、也不支持设备码） | 建一个 Gitee 第三方应用，把插件显示的回调地址**原样登记**进去，把 Client ID 填配置、Client Secret 存凭据服务；授权后浏览器跳回本机自动完成 | 私人令牌；或授权后手动把地址栏里的 `code` 粘回来 |
-| CSDN | **不能**（CSDN 没有 OAuth，`open.csdn.net` 并不存在） | 一键打开登录页，从 DevTools → Network 复制 `Cookie` 请求头粘回来（`document.cookie` 看不到 HttpOnly 的会话 cookie） | 实验性：点**「启动调试浏览器」**——插件自己找到 Chrome/Edge，用独立配置目录带调试端口启动，并把登录页打开；你登录后回来点「读取 Cookie」（默认关闭、需显式同意） |
+| CSDN |一键打开登录页，从 DevTools → Network 复制 `Cookie` 请求头粘回来（`document.cookie` 看不到 HttpOnly 的会话 cookie） | 实验性：点**「启动调试浏览器」**——插件自己找到 Chrome/Edge，用独立配置目录带调试端口启动，并把登录页打开；你登录后回来点「读取 Cookie」（默认关闭、需显式同意） |
 
 三条硬约束：
 
@@ -302,49 +254,20 @@ pnpm run smoke
 3. **client_secret / token / cookie 只进 `ctx.credentials`**，不进配置文件、不进 git、不回显、
    不写日志。
 
-> 实测提醒：在**本机**，`github.com` 主域 TCP 443 连接超时（同一时刻 `api.github.com` 可达），
 > 所以 GitHub 的授权页/登录页在这里可能打不开。插件在开始流程前会先做可达性预检，不可达时直接
 > 告诉你原因和替代路径（配代理/Watt 后重试，或在能访问 GitHub 的设备上生成 PAT 再粘贴），
 > 而不是转圈之后给你一个看不懂的报错。
 
 ---
 
-## 查代码是否需要登录：实测矩阵
-
-`LOGIN_REQUIREMENT_PROBED_AT` = **2026-10-04**，在本机实测。面板里的「连通性与登录要求」卡会显示
-同一张表，失败行的下面直接写着失败原因。
-
-| 操作 | GitHub | Gitee | CSDN |
-|---|---|---|---|
-| 匿名可达 | ✅ `api.github.com` 200 | ✅ `gitee.com` 200 | ✅ `so.csdn.net` 200 |
-| 仓库/文章搜索 | ✅ 匿名可用 | ⚠️ 匿名返回**空数组**（需要 token） | ✅ 匿名 30 条（仅 6 条带正文） |
-| 读公开文件内容 | ✅ 匿名可用 | ✅ 匿名可用 | —（没有文件概念） |
-| **查代码** | ❌ **必须 token**（匿名 `/search/code` → HTTP **401**） | ❌ **v5 没有该端点**（`/search/code` → HTTP **404**；网页代码搜索需登录） | ⚠️ 搜索接口不带正文，**需要打开文章页**；文章页缺 UA/Referer 时被 HTTP **521** 反爬拦截，登录 cookie 可提高成功率 |
-| OAuth | ✅ 设备码流程 | ✅ 授权码（必须 secret） | ❌ 没有 |
-
-**站点策略披露**：`so.csdn.net/robots.txt` 声明 `Disallow: /`（该主机不允许自动抓取）。
-本插件只在你的显式操作下发起单次请求，不做爬取、不批量遍历；`blog.csdn.net/robots.txt` 是
-`Allow: /`。
-
----
-
 ## 连通性检测怎么读
 
 「运行匿名自检」只打**公开端点、不带任何凭据**（token / cookie 都不会发出），结果渲染成三行固定
-状态，不是一个 JSON 文档：
-
-```
-GitHub     ● 连通     HTTP 200 · 812ms · dsh-web
-Gitee      ● 失败     HTTP 404 · 1204ms · node
-           失败原因：Gitee v5 没有 /search/code 端点（实测 404）…
-CSDN       ○ 未检测
-```
 
 - 三行恒定出现（GitHub / Gitee / CSDN），没测过的显示「未检测」，**顺序与返回顺序无关**。
 - 成功行给 HTTP 状态码、延迟与所用通道；**失败行的下一行直接给失败原因**，可一键复制。
 - 「用已保存凭据验证」是另一个按钮：只有你点它，才会带着已存凭据发一次校验请求
-  （GitHub/Gitee 用 `/user` 判断 200/401；CSDN 没有官方校验接口，用匿名/带 cookie 的抽样对比，
-  并如实告诉你有没有观察到改善）。
+  （并如实告诉你有没有观察到改善）。
 
 ---
 
@@ -369,8 +292,6 @@ CSDN       ○ 未检测
   保存栏会说明「当前 host 不认识自动保存设置……重启 DSH 后可持久化」，而不是把复选框偷偷拨回去。
 - 「撤销改动」同样先取消已排期的写入，再回到 host 的值。
 - 把某个值改回原样不算改动，不会产生一次写入。
-
-另外，保存成功后**第一眼看到的是「我保存了什么」**，而不是「我还缺什么」：
 
 - 顶部摘要卡按 host 回读的值逐行列出当前配置（源优先级顺序、GitHub 访问方式、自动降级、多源合并、
   账号状态、镜像数量、本机代理、关键上限、深读目标、显示位置），本次改动过的行标「本次修改」。
@@ -413,12 +334,6 @@ docs/DESIGN.md           设计说明（边界、决策点、接口冻结、数�
 test/                    vitest
 ```
 
-### 关于 `types/dsh/index.d.ts`
-
-`@deepseek-ai/*` 官方 SDK 在本机**不在磁盘上**（打包在 DSH 的运行体内、不可作为目录读取），
-所以没有上游 `.d.ts` 可 import。该文件是**按实测运行时形状手写的契约垫片**，tsconfig 已把它
-include 进程序。DSH 升级后需要按实测复核。
-
 ### 约定
 
 - 契约常量集中在 `src/contract.ts`，其它模块**只引用不重写**。
@@ -430,11 +345,10 @@ include 进程序。DSH 升级后需要按实测复核。
 
 ## 已知限制
 
-- **`node` 直连通道在本机完全没有出网能力** —— 三个源的实测冒烟全部 `fetch failed`；插件因此
-  实际只能走 `dsh-web` 通道。详见「已验证事实」。
+-  实际只能走 `dsh-web` 通道。。
 - **本机代理不作用于 `dsh-web` 通道**，而本机也只有 `dsh-web` 可用 —— 所以代理设置在这台机器
   上是空转的；见「本机代理」一节。
-- **`raw.githubusercontent.com` 在本机不稳定/不可直连** —— 建议配 raw 镜像基址。
+ **`raw.githubusercontent.com` 在本机不稳定/不可直连** —— 建议配 raw 镜像基址。
 - **Gitee 搜索端点未登录时返回空数组** —— 不算失败，但需要你提供 token 才有结果。
 - **`lib/client.css` 目前不会自动注入页面**。DSH 客户端模块加载器能否解析 CSS 说明符无法在
   本机验证，而猜错的代价是**整个插件加载失败**（比「没样式」严重得多），所以样式表作为独立
