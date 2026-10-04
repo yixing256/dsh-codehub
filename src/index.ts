@@ -28,6 +28,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { CredentialsService } from '@deepseek-ai/dsh-credentials'
 import type { WebServerService } from '@deepseek-ai/dsh-host-webserver'
 import type { SystemPromptService } from '@deepseek-ai/dsh-system-prompt'
 import type { ToolsService } from '@deepseek-ai/dsh-tools'
@@ -35,10 +36,14 @@ import type { WebService } from '@deepseek-ai/dsh-web'
 
 import { HARD_LIMITS, PACKAGE_NAME, SOURCES } from './contract.js'
 import type { CodehubConfig } from './config.js'
-import { createConsoleLogger } from './net.js'
+import { createConsoleLogger, createPostTransport, createTransport, isOfficialPostHost } from './net.js'
+import { createOAuthService } from './oauth.js'
+import { createBrowserLauncher } from './launcher.js'
+import type { BrowserLauncher } from './launcher.js'
+import type { OAuthService } from './oauth.js'
 import { createPromptSection } from './prompt.js'
 import { registerRoutes } from './routes.js'
-import { CodeSource } from './service.js'
+import { CREDENTIAL_REFS, CodeSource } from './service.js'
 import { createSettingsBridge } from './settings.js'
 import { LocalConfigStore } from './store.js'
 import { buildLearnCodeTool } from './tool.js'
@@ -143,6 +148,50 @@ function mountAll(
   let service: CodeSource | undefined
   const currentService = (): CodeSource | undefined => service
 
+  // The OAuth engine: built once per mount, injected into the routes. A failure
+  // here must not take the mount down — the `/oauth` routes answer 503 and every
+  // other surface keeps working (a PAT / cookie paste needs none of this).
+  let oauth: OAuthService | undefined
+  try {
+    oauth = createOAuthService({
+      post: buildPostTransport(config, store, log),
+      writeCredential: async (ref, value) => {
+        const credentials = ctx.get<CredentialsService>('credentials')
+        if (credentials === undefined) throw new Error('credentials 服务不可用，无法保存登录结果。')
+        await credentials.set(ref, value)
+      },
+      readCredential: async (ref) => {
+        const credentials = ctx.get<CredentialsService>('credentials')
+        if (credentials === undefined) return undefined
+        try {
+          const resolved = await credentials.resolve(ref)
+          const value = resolved?.value
+          return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined
+        } catch {
+          return undefined
+        }
+      },
+      credentialRefFor: (source) => CREDENTIAL_REFS[source],
+      probeHost: probeProviderHost,
+      logger: log,
+    })
+  } catch (error) {
+    oauth = undefined
+    log('OAuth 引擎构造失败，/oauth 路由将返回 503', { reason: describe(error) })
+  }
+
+  // The local browser launcher for the experimental CDP capture. Built here so the
+  // route can answer 503 when it is missing, instead of the panel offering a button
+  // that cannot work. It holds no credential: it locates a Chromium, starts it on a
+  // dedicated profile under `$DSH_HOME`, and reports the loopback debugger URL.
+  let launcher: BrowserLauncher | undefined
+  try {
+    launcher = createBrowserLauncher({})
+  } catch (error) {
+    launcher = undefined
+    log('浏览器 launcher 构造失败，/launch-browser 将返回 503', { reason: describe(error) })
+  }
+
   // -- 1. the service ------------------------------------------------------
   group('dsh-codehub: service', () => {
     const created = new CodeSource(ctx, {
@@ -189,7 +238,16 @@ function mountAll(
       log('codeSource 未就绪，未注册 /api/dsh-codehub/*')
       return
     }
-    return registerRoutes({ webServer, ctx, service: active, store, settings, logger: log })
+    return registerRoutes({
+      webServer,
+      ctx,
+      service: active,
+      store,
+      settings,
+      logger: log,
+      ...(oauth === undefined ? {} : { oauth }),
+      ...(launcher === undefined ? {} : { launcher }),
+    })
   })
 
   // -- 4. the prompt section (备注③ surface #2) ----------------------------
@@ -241,4 +299,82 @@ function describe(error: unknown): string {
   } catch {
     return '无法读取的错误对象'
   }
+}
+
+// ---------------------------------------------------------------------------
+// Browser-login plumbing (docs/DESIGN.md §7.2 / §7.3).
+// ---------------------------------------------------------------------------
+
+/** How long the reachability preflight may take. Short: it gates a user action. */
+const HOST_PROBE_TIMEOUT_MS = 5_000
+
+/** The provider hosts this plugin may probe. Anything else is not ours to dial. */
+function isProbeableHost(host: string): boolean {
+  return isOfficialPostHost(host.replace(/^https?:\/\//, '').split('/')[0] ?? '')
+}
+
+/**
+ * Value-free reachability preflight for the OAuth engine (`probeHost`).
+ *
+ * WHY IT EXISTS: this machine cannot open `github.com` (TCP 443 times out,
+ * docs/DESIGN.md §7.1), so a device flow would hang and then fail with a
+ * transport error. Answering "unreachable" BEFORE the first request is what lets
+ * the panel offer the PAT path instead.
+ *
+ * Never throws: a preflight that threw would be indistinguishable from a broken
+ * flow, and the engine must be able to turn a `false` into a sentence.
+ */
+async function probeProviderHost(host: string, signal?: AbortSignal): Promise<{ reachable: boolean; detail: string }> {
+  if (!isProbeableHost(host)) {
+    return { reachable: false, detail: `不在可达性预检白名单里（只预检 github.com / gitee.com 及其子域）：${host}` }
+  }
+  const target = host.startsWith('http') ? host : `https://${host}`
+  try {
+    // No logger on purpose: an unreachable github.com is the EXPECTED state here
+    // and its detail travels to the user through the return value, not the log.
+    const transport = createTransport({ transport: 'node', retries: 0, timeoutMs: HOST_PROBE_TIMEOUT_MS, logger: () => {} })
+    const response = await transport({
+      url: target,
+      timeoutMs: HOST_PROBE_TIMEOUT_MS,
+      ...(signal === undefined ? {} : { signal }),
+    })
+    // Any HTTP answer proves the TCP/TLS path works, even a 404 or a 403.
+    return { reachable: response.statusCode > 0, detail: `HTTP ${response.statusCode}` }
+  } catch (error) {
+    return { reachable: false, detail: describe(error) }
+  }
+}
+
+/**
+ * The POST seam the OAuth engine gets (`createPostTransport`).
+ *
+ * The proxy address is read LAZILY from a mutable box: the transport must be
+ * built synchronously during mount, while the winning address lives in the 0600
+ * store and can only be read asynchronously. `resolveConfig()` lets the store
+ * beat the schema field, and the login exchange has to follow the same rule —
+ * otherwise a user who set the proxy only in the store would see the credential
+ * exchange leave untunneled.
+ */
+function buildPostTransport(
+  config: CodehubConfig,
+  store: LocalConfigStore,
+  log: (event: string, detail?: Record<string, unknown>) => void,
+): ReturnType<typeof createPostTransport> {
+  const box: { localProxy?: string } = { localProxy: readConfiguredProxy(config) }
+  void store
+    .read()
+    .then((stored) => {
+      const value = typeof stored.localProxy === 'string' ? stored.localProxy.trim() : ''
+      if (value.length > 0) box.localProxy = value
+    })
+    .catch((error: unknown) => {
+      log('读取本机代理地址失败，OAuth 将按配置字段里的地址出网', { reason: describe(error) })
+    })
+  return createPostTransport(box)
+}
+
+/** `github.localProxy` off the (tolerant) Cordis config object. */
+function readConfiguredProxy(config: CodehubConfig): string {
+  const group = config.github
+  return typeof group?.localProxy === 'string' ? group.localProxy.trim() : ''
 }

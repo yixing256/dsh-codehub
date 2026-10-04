@@ -1,5 +1,5 @@
 /**
- * 备注② — CSDN v3 搜索接口的来源标注（task-5 §A.2）。
+ * 备注② — CSDN v3 搜索接口的来源标注（task-5 §A.2；task-3 §C 复核）。
  *
  * The endpoint `https://so.csdn.net/api/v3/search` is NOT a documented public
  * API. The user requires the provenance to travel with it everywhere, so this
@@ -14,6 +14,11 @@
  *      wrong (`empty` / `parse-failed` / `not-code`), instead of throwing, and
  *      the browser panel renders it verbatim.
  *
+ * task-3 adds a second, equally single-sourced pair of sentences: the login
+ * requirement (`CSDN_LOGIN_REQUIREMENT`) and the robots position
+ * (`CSDN_ROBOTS_DISCLOSURE`). They must appear in the adapter SOURCE by
+ * reference and on the source path the agent actually reads (the `reason`).
+ *
  * Zero network: the adapter is driven by a recording fake `Transport`.
  */
 
@@ -22,13 +27,18 @@ import { describe, expect, it } from 'vitest'
 import {
   CSDN_API_NOTE,
   CSDN_API_PROBED_AT,
+  CSDN_LOGIN_REQUIREMENT,
+  CSDN_ROBOTS_DISCLOSURE,
   CSDN_SEARCH_BASE,
   LOCAL_PROXY_SCOPE_NOTE,
 } from '../src/contract.js'
 import {
+  CSDN_BROWSER_USER_AGENT,
   CSDN_PROVENANCE,
+  CSDN_SEARCH_REFERER,
   CSDN_SOURCE_NOTE,
   buildCsdnSearchUrl,
+  csdnArticleHeaders,
   csdnDeepRead,
   csdnRequestHeaders,
   searchCsdn,
@@ -173,5 +183,84 @@ describe('备注② — 只发实测确认过的参数与真端点', () => {
     const outcome = await searchCsdn('vue', { transport })
 
     expect(outcome.reason).toContain(LOCAL_PROXY_SCOPE_NOTE)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// CSDN 登录要求 / robots 立场（task-3 §C）.
+//
+// 「查代码需不需要登录」和「站点允不允许抓」是两个用户明确问过的问题。两条答案
+// 都由 contract.ts 提供，这里证明它们既写在适配器源码里（按引用），也确实出现在
+// agent 会读到的 source path（失败/补齐时的 reason）上。
+// ---------------------------------------------------------------------------
+
+describe('CSDN — 登录要求与 robots 立场按引用到达 source path', () => {
+  it('csdn.ts 引用两个常量，而不是另写一套文案（源码文本断言）', () => {
+    const source = readRepoFile('src/sources/csdn.ts')
+    expect(source).toContain('CSDN_LOGIN_REQUIREMENT')
+    expect(source).toContain('CSDN_ROBOTS_DISCLOSURE')
+  })
+
+  it('0 条结果（empty）：reason 同时回答「要不要登录」与 robots 立场', async () => {
+    const { transport } = recordingTransport(() => jsonAnswer({ result_vos: [] }))
+    const outcome = await searchCsdn('vue', { transport })
+
+    expect(outcome.failure).toBe('empty')
+    expect(outcome.reason).toContain(CSDN_API_NOTE)
+    expect(outcome.reason).toContain(CSDN_LOGIN_REQUIREMENT)
+    expect(outcome.reason).toContain(CSDN_ROBOTS_DISCLOSURE)
+  })
+
+  it('命中但抽不到代码（not-code）：reason 同样带上两句', async () => {
+    const { transport } = recordingTransport(() =>
+      jsonAnswer({
+        result_vos: [
+          {
+            title: '只有正文',
+            body: '这里没有任何代码块，全是散文说明。',
+            url: 'https://blog.csdn.net/u/article/details/1',
+          },
+        ],
+      }),
+    )
+    const outcome = await searchCsdn('vue', { transport })
+
+    expect(outcome.failure).toBe('not-code')
+    expect(outcome.reason).toContain(CSDN_LOGIN_REQUIREMENT)
+    expect(outcome.reason).toContain(CSDN_ROBOTS_DISCLOSURE)
+  })
+
+  it('每一次请求都带浏览器 UA + Referer（实测缺它们会被 521 拦截）', () => {
+    const search = csdnRequestHeaders({ transport: async () => jsonAnswer({}) })
+    expect(search['user-agent']).toBe(CSDN_BROWSER_USER_AGENT)
+    expect(search['referer']).toBe(CSDN_SEARCH_REFERER)
+    expect(CSDN_BROWSER_USER_AGENT).toContain('Mozilla/5.0')
+    expect(CSDN_BROWSER_USER_AGENT).toContain('Chrome/126')
+
+    const article = csdnArticleHeaders({ transport: async () => jsonAnswer({}), token: 'csdn-session' })
+    expect(article['user-agent']).toBe(CSDN_BROWSER_USER_AGENT)
+    expect(article['referer']).toBe(CSDN_SEARCH_REFERER)
+    expect(article['cookie']).toBe('csdn-session')
+    expect(article['accept']).toContain('text/html')
+  })
+
+  it('文章页补齐的那一行随行披露 robots 立场（单次请求，不批量遍历）', async () => {
+    const search = jsonAnswer({
+      result_vos: [
+        {
+          title: '散文标题',
+          body: '搜索结果里没有代码。',
+          url: 'https://blog.csdn.net/u/article/details/9',
+        },
+      ],
+    })
+    const article = jsonAnswer('<pre class="language-ts">const a = 1</pre>')
+    const { transport } = recordingTransport((request) =>
+      request.url.includes('blog.csdn.net') ? article : search,
+    )
+    const outcome = await searchCsdn('vue', { transport, articleFetch: true, maxDepth: 1 })
+
+    expect(outcome.results[0]?.code).toContain('const a = 1')
+    expect(outcome.results[0]?.reason).toContain(CSDN_ROBOTS_DISCLOSURE)
   })
 })

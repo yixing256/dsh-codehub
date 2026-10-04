@@ -16,9 +16,24 @@
  *
  * 备注③：只产出「思路」摘要 + 有界代码摘录（`code` 仅学习参考），`is_verbatim_copy`
  * 恒为 false；`deepRead` 明确拒绝（CSDN 只作浅搜索补充）。
+ *
+ * ── 登录要求 / 反爬 / robots（单一来源见 contract.ts）─────────────────────────
+ *
+ * 实测 2026-10-04：搜索接口匿名可用（HTTP 200，30 条中仅 6 条带 `body`），正文代码
+ * 需要打开文章页；文章页缺浏览器 UA / Referer 时会被 **HTTP 521** 反爬拦截，带上后
+ * 200 且 19 个 `<pre>` 可抽。`so.csdn.net/robots.txt` 是 `Disallow: /`。这三件事分别
+ * 由 `CSDN_LOGIN_REQUIREMENT` 与 `CSDN_ROBOTS_DISCLOSURE` 承载，本文件只引用、不重写：
+ * 失败文案里带上它们，用户才知道「要不要登录、站点允不允许抓」。
  */
 
-import { CSDN_API_NOTE, CSDN_API_PROBED_AT, CSDN_SEARCH_BASE } from '../contract.js'
+import {
+  CSDN_API_NOTE,
+  CSDN_API_PROBED_AT,
+  CSDN_LOGIN_REQUIREMENT,
+  CSDN_ROBOTS_DISCLOSURE,
+  CSDN_SEARCH_BASE,
+  HARD_LIMITS,
+} from '../contract.js'
 import type { CodeLearnResult, DeepReadTarget, FailureKind } from '../contract.js'
 import type {
   AdapterAttempt,
@@ -36,6 +51,7 @@ import {
   classifyTransportError,
   failureFromResponse,
   joinReason,
+  optionalReason,
   transportNotes,
 } from './types.js'
 import { decodeEntities, looksLikeCode, stripHtml, summarize } from '../learn/summary.js'
@@ -62,16 +78,55 @@ export const CSDN_SOURCE_NOTE = CSDN_API_NOTE
 /** `result_vos[]` fields this adapter reads. Nothing outside this list is read. */
 const CSDN_RESULT_FIELDS = ['title', 'body', 'description', 'url', 'originalType', 'create_time', 'author', 'view'] as const
 
-/** 转载降权：`originalType !== '原创'` 时写入 reason 的说明。 */
+/**
+ * 转载降权的两种说明（三态，见 `searchCsdn` 里 `reposted` 的推导）。
+ *
+ * `originalType` was measured to be ABSENT from the anonymous response
+ * (2026-10-04), so "missing" must not be read as "转载": that would down-weight
+ * every row and hide real hits. Only an explicit non-「原创」 value is a repost.
+ */
 const REPOST_NOTE = '原文 originalType 非「原创」，疑似转载，已降低置信度'
+const ORIGINAL_TYPE_UNKNOWN_NOTE = '来源类型未知（响应里没有 originalType 字段），未按转载降权'
 
 /** CSDN 正文里最多抽取的代码块数量（合并成一条有界摘录）。 */
 export const CSDN_MAX_CODE_BLOCKS = 3
 
+/**
+ * Browser-like User-Agent. Measured 2026-10-04: an article page answers **HTTP
+ * 521** to a request without a browser UA + Referer, and 200 with them. Kept as
+ * an exported constant so a test can assert the headers CSDN actually receives.
+ */
+export const CSDN_BROWSER_USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+
+/** Referer that pairs with the UA above; the search page is the natural origin. */
+export const CSDN_SEARCH_REFERER = 'https://so.csdn.net/'
+
+/** Accept header for the JSON search endpoint. */
+export const CSDN_SEARCH_ACCEPT = 'application/json, text/plain, */*'
+
+/** Accept header for an article page (HTML). */
+export const CSDN_ARTICLE_ACCEPT = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+
 /** CSDN 登录态是 Cookie，不是 Bearer token（见 `csdnRequestHeaders()`）。 */
 export const CSDN_REQUEST_HEADERS: Readonly<Record<string, string>> = {
-  accept: 'application/json, text/plain, */*',
+  accept: CSDN_SEARCH_ACCEPT,
+  'user-agent': CSDN_BROWSER_USER_AGENT,
+  referer: CSDN_SEARCH_REFERER,
 }
+
+/** HTTP status CSDN's anti-bot layer answers when UA / Referer are missing. */
+export const CSDN_ARTICLE_BLOCKED_STATUS = 521
+
+/** 521 时的中文说明：结论（被反爬拦截）+ 现状（已带 UA/Referer）+ 出路（登录 cookie）。 */
+export const CSDN_ARTICLE_BLOCKED_NOTE =
+  '文章页触发 CSDN 反爬（HTTP 521）：请求已带浏览器 UA / Referer 仍被拦截，站点会按频次与指纹判定自动抓取；带上登录 cookie 可提高成功率'
+
+/** 文章页抽到代码时的来源说明（搜索结果本身不带正文）。 */
+export const CSDN_ARTICLE_CODE_NOTE = '代码来自文章页（so.csdn.net 的搜索结果不带正文）'
+
+/** 文章页 200 但没有可抽代码块时的说明。 */
+export const CSDN_ARTICLE_NO_CODE_NOTE = '文章页已打开，但没有可抽取的代码块'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -233,10 +288,14 @@ export function buildCsdnSearchUrl(
 }
 
 /**
- * Headers for one CSDN request. CSDN has no API token: its login state is a
- * cookie, so a credential handed to this adapter by `ctx.credentials` travels in
- * the `cookie` header. The header set is returned rather than sent, so the test
- * suite can assert it without a network.
+ * Headers for one CSDN search request. CSDN has no API token: its login state is
+ * a cookie, so a credential handed to this adapter by `ctx.credentials` travels
+ * in the `cookie` header. The header set is returned rather than sent, so the
+ * test suite can assert it without a network.
+ *
+ * The browser UA + Referer are not decoration: measured 2026-10-04, CSDN's
+ * anti-bot layer answers HTTP 521 to header-less requests, so every request this
+ * adapter makes has to look like a browser navigation.
  */
 export function csdnRequestHeaders(opts: AdapterSearchOptions): Record<string, string> {
   const headers: Record<string, string> = { ...CSDN_REQUEST_HEADERS }
@@ -244,10 +303,107 @@ export function csdnRequestHeaders(opts: AdapterSearchOptions): Record<string, s
   return headers
 }
 
-function failureNoteFor(failure: FailureKind): string | undefined {
+/**
+ * Headers for one article-page request: same UA/Referer/cookie story as the
+ * search call, but asking for HTML rather than JSON.
+ */
+export function csdnArticleHeaders(opts: AdapterSearchOptions): Record<string, string> {
+  const headers: Record<string, string> = {
+    ...csdnRequestHeaders(opts),
+    accept: CSDN_ARTICLE_ACCEPT,
+  }
+  return headers
+}
+
+/**
+ * How many article pages this call may open.
+ *
+ * `maxDepth` is the caller's budget for the same reason it bounds failover: one
+ * number the user already controls. It is read RAW (never through
+ * `clampMaxDepth()`, whose missing-value default is 1) because an absent budget
+ * must mean **zero** extra requests — a search that silently opens pages the
+ * caller did not ask for would be worse than a missing excerpt.
+ */
+export function articlePageBudget(maxDepth: number | undefined): number {
+  if (typeof maxDepth !== 'number' || !Number.isFinite(maxDepth) || maxDepth <= 0) return 0
+  return Math.min(Math.floor(maxDepth), HARD_LIMITS.maxDepth)
+}
+
+/** Reason clauses for a suspicious endpoint shape (备注②) plus the login / robots story. */
+function failureNotesFor(failure: FailureKind): string[] {
   // 备注②：接口形态可疑时（空 / 解析失败 / 抽不到代码）把来源标注一并交给用户。
-  if (failure === 'empty' || failure === 'parse-failed' || failure === 'not-code') return CSDN_API_NOTE
-  return undefined
+  if (failure !== 'empty' && failure !== 'parse-failed' && failure !== 'not-code') return []
+  const notes: string[] = [CSDN_API_NOTE]
+  if (failure === 'empty' || failure === 'not-code') {
+    // 「需不需要登录」与「站点允不允许抓」是用户明确问过的两件事：按引用回答，
+    // 而不是让调用方去猜为什么没有正文。
+    notes.push(CSDN_LOGIN_REQUIREMENT, CSDN_ROBOTS_DISCLOSURE)
+  }
+  return notes
+}
+
+/** One article-page completion attempt: the code (possibly empty) plus its reason. */
+interface CsdnArticleFetch {
+  readonly code: string
+  readonly language: string
+  /** 中文说明，写进那一行的 reason；失败时解释为什么没拿到代码。 */
+  readonly reason: string
+}
+
+/**
+ * Open ONE article page and extract its code blocks.
+ *
+ * Why this exists: the search payload carries a usable `body` for only a
+ * minority of rows (measured 30 rows / 6 with `body`), so a legitimate hit
+ * usually has no code until its own page is read. Each call issues exactly one
+ * request — no crawling, no link following — which is the position
+ * `CSDN_ROBOTS_DISCLOSURE` states to the user. Failure is a value: the caller
+ * keeps the row (title + URL) and records the reason, and never fabricates code.
+ */
+async function fetchCsdnArticleCode(
+  url: string,
+  opts: AdapterSearchOptions,
+  timeoutMs: number,
+  attempts: AdapterAttempt[],
+): Promise<CsdnArticleFetch> {
+  let res: TransportResponse
+  try {
+    res = await opts.transport({ url, headers: csdnArticleHeaders(opts), timeoutMs, signal: opts.signal })
+  } catch (error) {
+    const classified = classifyTransportError(error)
+    attempts.push({ url, statusCode: null, failure: classified.failure, note: classified.reason })
+    return { code: '', language: '', reason: joinReason('文章页抓取失败，未取到代码', classified.reason) }
+  }
+
+  const notes = transportNotes(res)
+  const httpFailure = failureFromResponse(res, 'CSDN 文章页')
+  if (httpFailure !== null) {
+    attempts.push({
+      url,
+      statusCode: res.statusCode,
+      failure: httpFailure.failure,
+      note: optionalReason(httpFailure.reason, notes.join('；')),
+    })
+    const blocked = res.statusCode === CSDN_ARTICLE_BLOCKED_STATUS
+    return {
+      code: '',
+      language: '',
+      reason: joinReason(
+        blocked ? CSDN_ARTICLE_BLOCKED_NOTE : `文章页未取到代码（HTTP ${res.statusCode}）`,
+        // 521 时「要不要登录」就是用户的下一个问题，按引用一并回答。
+        blocked ? CSDN_LOGIN_REQUIREMENT : undefined,
+        httpFailure.reason,
+        notes.join('；'),
+      ),
+    }
+  }
+
+  const extracted = extractCodeBlocks(res.body)
+  attempts.push({ url, statusCode: res.statusCode, note: optionalReason(notes.join('；')) })
+  if (extracted.code.trim().length === 0) {
+    return { code: '', language: '', reason: joinReason(CSDN_ARTICLE_NO_CODE_NOTE, notes.join('；')) }
+  }
+  return { code: extracted.code, language: extracted.language, reason: joinReason(CSDN_ARTICLE_CODE_NOTE, notes.join('；')) }
 }
 
 /** One CSDN search. Failures are values; nothing is thrown. */
@@ -272,7 +428,7 @@ export async function searchCsdn(query: string, opts: AdapterSearchOptions): Pro
     return {
       ok: false,
       results: [],
-      reason: joinReason('CSDN 搜索失败', classified.reason, failureNoteFor(classified.failure)),
+      reason: joinReason('CSDN 搜索失败', classified.reason, ...failureNotesFor(classified.failure)),
       failure: classified.failure,
       attempts,
     }
@@ -290,7 +446,7 @@ export async function searchCsdn(query: string, opts: AdapterSearchOptions): Pro
     return {
       ok: false,
       results: [],
-      reason: joinReason('CSDN 搜索失败', httpFailure.reason, failureNoteFor(httpFailure.failure)),
+      reason: joinReason('CSDN 搜索失败', httpFailure.reason, ...failureNotesFor(httpFailure.failure)),
       failure: httpFailure.failure,
       attempts,
     }
@@ -324,6 +480,11 @@ export async function searchCsdn(query: string, opts: AdapterSearchOptions): Pro
   const results: CodeLearnResult[] = []
   let skippedNoUrl = 0
   let skippedNoCode = 0
+  // Article-page completion is opt-in twice over: `articleFetch === true` AND a
+  // positive `maxDepth` budget. The budget is shared across rows, so one call
+  // can never fan out into a crawl.
+  const articleBudget = opts.articleFetch === true ? articlePageBudget(opts.maxDepth) : 0
+  let articleFetches = 0
 
   for (const raw of rows) {
     const urlValue = asString(raw['url'])
@@ -334,18 +495,41 @@ export async function searchCsdn(query: string, opts: AdapterSearchOptions): Pro
     const body = asString(raw['body']) ?? ''
     const description = asString(raw['description']) ?? ''
     const extracted = extractCodeBlocks(body.length > 0 ? body : description)
-    if (extracted.code.trim().length === 0) {
+    const title = stripHtml(asString(raw['title']) ?? '').replace(/\s+/g, ' ').trim() || '（无标题）'
+
+    let code = extracted.code
+    let language = extracted.language
+    const rowNotes: string[] = []
+    let articleAttempted = false
+
+    if (code.trim().length === 0 && articleBudget > articleFetches) {
+      articleFetches += 1
+      articleAttempted = true
+      const article = await fetchCsdnArticleCode(urlValue, opts, timeoutMs, attempts)
+      code = article.code
+      language = article.language
+      // 站点策略随行披露：本次只抓了这一篇，不批量遍历。
+      rowNotes.push(CSDN_ROBOTS_DISCLOSURE)
+      rowNotes.push(article.reason)
+    }
+
+    if (code.trim().length === 0 && !articleAttempted) {
+      // No code and no permission to look at the article page: keep the old
+      // behaviour and do not emit a row that carries nothing but a title.
       skippedNoCode += 1
       continue
     }
 
-    const title = stripHtml(asString(raw['title']) ?? '').replace(/\s+/g, ' ').trim() || '（无标题）'
+    // Three-state `originalType`: the field is ABSENT from the anonymous
+    // response (measured 2026-10-04), so only an explicit non-「原创」 value is a
+    // repost. Missing -> unknown -> no penalty, with the state named in `reason`.
     const originalType = asString(raw['originalType'])
-    const reposted = originalType !== '原创'
-    const bounded = boundExcerpt(extracted.code, maxCodeChars)
+    const originalTypeUnknown = originalType === undefined
+    const reposted = originalType !== undefined && originalType !== '原创'
+    const bounded = boundExcerpt(code, maxCodeChars)
 
-    const rowNotes: string[] = []
     if (reposted) rowNotes.push(REPOST_NOTE)
+    else if (originalTypeUnknown) rowNotes.push(ORIGINAL_TYPE_UNKNOWN_NOTE)
     const author = asString(raw['author'])
     if (author !== undefined) rowNotes.push(`作者 ${author}`)
     const view = asNumber(raw['view'])
@@ -355,6 +539,9 @@ export async function searchCsdn(query: string, opts: AdapterSearchOptions): Pro
     const scored = score({
       source: 'csdn',
       authenticated: opts.authenticated === true,
+      // `score()` only models two states; "unknown" is deliberately scored as
+      // NOT reposted (the honest reading of a missing field) and the unknown
+      // state travels in the notes instead.
       reposted,
       completeness: completenessFrom(raw, CSDN_RESULT_FIELDS),
       notes: rowNotes,
@@ -364,10 +551,10 @@ export async function searchCsdn(query: string, opts: AdapterSearchOptions): Pro
       source: 'csdn',
       url: urlValue,
       title,
-      language: extracted.language,
+      language,
       code: bounded.code,
       codeTruncated: bounded.codeTruncated,
-      learned_summary: summarize({ title, description, body, language: extracted.language }),
+      learned_summary: summarize({ title, description, body, language }),
       is_verbatim_copy: false,
       stars: null,
       updatedAt: parseCsdnTime(raw['create_time']),
@@ -387,7 +574,7 @@ export async function searchCsdn(query: string, opts: AdapterSearchOptions): Pro
           : `CSDN 命中 ${rows.length} 条，但没有任何条目包含可抽取的代码块`,
         skippedNoUrl > 0 ? `跳过 ${skippedNoUrl} 条缺少 url 的条目` : undefined,
         skippedNoCode > 0 ? `跳过 ${skippedNoCode} 条无代码块的条目` : undefined,
-        failureNoteFor(failure),
+        ...failureNotesFor(failure),
         notes.join('；'),
       ),
       failure,
@@ -401,7 +588,8 @@ export async function searchCsdn(query: string, opts: AdapterSearchOptions): Pro
     ok: true,
     results: kept,
     reason: joinReason(
-      `CSDN 搜索命中 ${rows.length} 条，抽取到 ${results.length} 个含代码块的条目`,
+      `CSDN 搜索命中 ${rows.length} 条，抽取到 ${results.length} 个条目（其中 ${kept.filter((row) => row.code.length > 0).length} 条带代码摘录）`,
+      articleFetches > 0 ? `已按 articleFetch 打开 ${articleFetches} 篇文章页补齐正文` : undefined,
       truncated ? `已按 maxItems=${maxItems} 截断` : undefined,
       notes.join('；'),
     ),

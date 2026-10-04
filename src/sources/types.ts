@@ -150,7 +150,24 @@ export interface AdapterSearchOptions {
   rawMirrors?: readonly string[]
   /** Allow the HTML-page fallback when the JSON endpoint answers empty (gitee/csdn). */
   htmlFallback?: boolean
-  /** Failover depth budget for this call; clamped by `clampMaxDepth()`. */
+  /**
+   * Opt-in article-page completion (CSDN only).
+   *
+   * Measured 2026-10-04: `so.csdn.net`'s search payload carries a usable body
+   * for only 6 of 30 rows, so a hit can be real while its code is missing. When
+   * this is true the adapter may fetch the hit's own article page once to
+   * extract the code there. `undefined` means false, which keeps every existing
+   * caller on the old, network-cheaper path.
+   */
+  articleFetch?: boolean
+  /**
+   * Failover depth budget for this call; clamped by `clampMaxDepth()`.
+   *
+   * CSDN additionally reads it as the **article-page count budget** for
+   * `articleFetch` (see above). That path uses the RAW value, not
+   * `clampMaxDepth()`: a missing value must mean 0 pages, whereas
+   * `clampMaxDepth(undefined)` supplies a failover default of 1.
+   */
   maxDepth?: number
   /** Cancellation for the whole call. */
   signal?: AbortSignal

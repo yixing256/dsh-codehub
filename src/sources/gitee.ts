@@ -1,14 +1,20 @@
 /**
  * dsh-codehub — Gitee 源适配器.
  *
- * Endpoints — and ONLY these two, both from `contract.ts`:
+ * Endpoint — and ONLY this one, from `contract.ts`:
  *
  *   `GITEE_SEARCH_REPOSITORIES`  `/search/repositories?q=&per_page=`
- *   `GITEE_SEARCH_CODE`          `/search/code?q=`（需要 token）
  *
- * `https://gitee.com/api/v5/projects?q=...` was probed live and returned **404**.
- * It does not exist, is not referenced anywhere in this file, and must never be
- * implemented.
+ * There is NO code-search endpoint to pair with it. Measured 2026-10-04:
+ * `GET https://gitee.com/api/v5/search/code?q=vue` answers **HTTP 404 with an
+ * HTML page-not-found body**, so it is not a v5 endpoint at all and this module
+ * must never build a request for it (see `GITEE_CODE_SEARCH_SUPPORTED`). Gitee's
+ * *web* code search (search.gitee.com) renders client-side and needs a
+ * logged-in session, so it is not reachable as an API either.
+ *
+ * `https://gitee.com/api/v5/projects?q=...` was probed live and returned **404**
+ * as well. It does not exist, is not referenced anywhere in this file, and must
+ * never be implemented.
  *
  * Live facts this adapter is built around:
  *   • anonymous `/search/repositories?q=vue` → HTTP 200 with an empty array, so
@@ -26,9 +32,13 @@
  *
  * 备注①：all egress goes through `opts.transport`, and transport notes are copied
  * into `reason` verbatim.
+ *
+ * 登录要求：every failure/no-result `reason` quotes `GITEE_LOGIN_REQUIREMENT`
+ * rather than re-spelling the three measured facts, so the adapter, the panel,
+ * the README and the tests can never disagree.
  */
 
-import { GITEE_API_BASE, GITEE_SEARCH_CODE, GITEE_SEARCH_REPOSITORIES } from '../contract.js'
+import { GITEE_API_BASE, GITEE_LOGIN_REQUIREMENT, GITEE_SEARCH_REPOSITORIES } from '../contract.js'
 import type { CodeLearnResult, DeepReadTarget } from '../contract.js'
 import type {
   AdapterAttempt,
@@ -63,9 +73,6 @@ const GITEE_REPO_FIELDS = [
   'updated_at',
   'default_branch',
 ] as const
-
-/** Fields read from a `/search/code` row; the container shape is not verified. */
-const GITEE_CODE_FIELDS = ['path', 'url', 'html_url', 'repository', 'repo'] as const
 
 /** Gitee API headers. */
 export const GITEE_API_HEADERS: Readonly<Record<string, string>> = {
@@ -103,8 +110,10 @@ function normalizeBase(base: string | undefined): string {
 }
 
 /**
- * Build a Gitee v5 URL. `endpointPath` must be one of the two contract
- * constants — this function is not a general URL builder.
+ * Build a Gitee v5 URL. `endpointPath` is a path this module owns — a contract
+ * constant (`GITEE_SEARCH_REPOSITORIES`) or a repository metadata path built
+ * from parsed owner/repo. This is not a general URL builder, and no caller may
+ * pass a code-search path: that endpoint does not exist.
  */
 export function buildGiteeApiUrl(
   endpointPath: string,
@@ -265,8 +274,11 @@ export async function searchGiteeRepositories(query: string, opts: AdapterSearch
       results: [],
       reason: joinReason(
         items.length === 0
-          ? 'Gitee 仓库搜索返回 0 条结果（匿名调用实测会返空，登录后可能才有数据）'
+          ? 'Gitee 仓库搜索返回 0 条结果'
           : `Gitee 仓库搜索命中 ${items.length} 条，但没有一条带得 html_url`,
+        // Single source of truth for the login story: the anonymous empty array
+        // is a token issue, not a "no such code" issue.
+        GITEE_LOGIN_REQUIREMENT,
         skipped > 0 ? `跳过 ${skipped} 条不可用条目` : undefined,
         notes.join('；'),
       ),
@@ -289,145 +301,16 @@ export async function searchGiteeRepositories(query: string, opts: AdapterSearch
   }
 }
 
-/**
- * `GET /search/code`. Requires a token; without one it answers `auth-required`
- * and sends nothing. The response container is not verified against a live
- * probe, so only `path` / `url` / `html_url` / `repository.full_name` /
- * `repository.html_url` are read, and an unrecognised item is skipped rather
- * than guessed at.
+/*
+ * REMOVED — `searchGiteeCode` and its `GET /search/code` request builder.
+ *
+ * Measured 2026-10-04: that path answers HTTP 404 with an HTML page-not-found
+ * body, i.e. Gitee v5 has no code-search endpoint at all (see
+ * `GITEE_CODE_SEARCH_SUPPORTED`). Keeping a function that could rebuild the
+ * request would keep the old "code search just needs a token" story alive, so
+ * the function is gone rather than merely disabled; what Gitee actually
+ * requires is quoted from `GITEE_LOGIN_REQUIREMENT` instead.
  */
-export async function searchGiteeCode(query: string, opts: AdapterSearchOptions): Promise<AdapterOutcome> {
-  const attempts: AdapterAttempt[] = []
-  const maxItems = clampMaxItems(opts.maxItems)
-  const timeoutMs = clampTimeout(opts.timeoutMs)
-  const token = tokenForAccess(opts.access, opts.token)
-  const trimmed = typeof query === 'string' ? query.trim() : ''
-
-  if (trimmed.length === 0) {
-    return { ok: false, results: [], reason: 'Gitee 代码搜索：查询为空，未发起任何请求。', failure: 'empty', attempts }
-  }
-  if (token === undefined) {
-    return {
-      ok: false,
-      results: [],
-      reason: 'Gitee 代码搜索需要 token（access_token / Bearer）；未发起任何请求。',
-      failure: 'auth-required',
-      attempts,
-    }
-  }
-
-  const url = buildGiteeApiUrl(GITEE_SEARCH_CODE, {
-    ...(opts.apiBase === undefined ? {} : { apiBase: opts.apiBase }),
-    params: { q: trimmed, per_page: maxItems },
-  })
-
-  let res: TransportResponse
-  try {
-    res = await opts.transport({ url, headers: giteeHeaders(opts), token, timeoutMs, signal: opts.signal })
-  } catch (error) {
-    const classified = classifyTransportError(error)
-    attempts.push({ url, statusCode: null, failure: classified.failure, note: classified.reason })
-    return { ok: false, results: [], reason: classified.reason, failure: classified.failure, attempts }
-  }
-
-  const notes = transportNotes(res)
-  const httpFailure = failureFromResponse(res, 'Gitee 代码搜索')
-  attempts.push({
-    url,
-    statusCode: res.statusCode,
-    failure: httpFailure?.failure,
-    note: optionalReason(httpFailure?.reason, notes.join('；')),
-  })
-  if (httpFailure !== null) {
-    return { ok: false, results: [], reason: httpFailure.reason, failure: httpFailure.failure, attempts }
-  }
-
-  let payload: unknown
-  try {
-    payload = JSON.parse(res.body) as unknown
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
-    return {
-      ok: false,
-      results: [],
-      reason: joinReason('Gitee 代码搜索返回值不是合法 JSON', `解析错误：${detail}`, notes.join('；')),
-      failure: 'parse-failed',
-      attempts,
-    }
-  }
-
-  const items = giteeRowsOf(payload)
-  if (items === null) {
-    return {
-      ok: false,
-      results: [],
-      reason: joinReason('Gitee 代码搜索返回结构无法识别（不猜字段、不伪造数据）', notes.join('；')),
-      failure: 'parse-failed',
-      attempts,
-    }
-  }
-
-  const rows: CodeLearnResult[] = []
-  let skipped = 0
-  for (const item of items) {
-    const repositoryRaw: unknown = item['repository']
-    const repoRawAlt: unknown = item['repo']
-    const repository = isRecord(repositoryRaw) ? repositoryRaw : isRecord(repoRawAlt) ? repoRawAlt : null
-    const repoUrl = repository === null ? undefined : asString(repository['html_url'])
-    const url = asString(item['html_url']) ?? repoUrl
-    const path = asString(item['path'])
-    if (url === undefined) {
-      skipped += 1
-      continue
-    }
-    const fullName = repository === null ? undefined : asString(repository['full_name'])
-    const title = path === undefined ? fullName ?? url : fullName === undefined ? path : `${fullName}/${path}`
-    const scored = score({
-      source: 'gitee',
-      authenticated: true,
-      reposted: false,
-      completeness: completenessFrom(item, GITEE_CODE_FIELDS),
-      notes,
-    })
-    rows.push({
-      source: 'gitee',
-      url,
-      title,
-      language: '',
-      code: '',
-      codeTruncated: false,
-      learned_summary: summarize({ title }),
-      is_verbatim_copy: false,
-      stars: null,
-      updatedAt: null,
-      confidence: scored.confidence,
-      reason: joinReason('Gitee 代码搜索命中（容器字段未实测验证，按保守解析处理）', scored.reason),
-    })
-  }
-
-  if (rows.length === 0) {
-    return {
-      ok: false,
-      results: [],
-      reason: joinReason(
-        items.length === 0 ? 'Gitee 代码搜索返回 0 条结果' : `Gitee 代码搜索命中 ${items.length} 条，但没有一条能解析出可打开的 URL`,
-        skipped > 0 ? `跳过 ${skipped} 条未识别条目（不伪造字段）` : undefined,
-        notes.join('；'),
-      ),
-      failure: items.length === 0 ? 'empty' : 'parse-failed',
-      attempts,
-    }
-  }
-
-  const truncated = rows.length > maxItems
-  return {
-    ok: true,
-    results: rows.slice(0, maxItems),
-    reason: joinReason(`Gitee 代码搜索命中 ${rows.length} 条（已登录）`, truncated ? `已按 maxItems=${maxItems} 截断` : undefined, notes.join('；')),
-    attempts,
-    truncated,
-  }
-}
 
 // ---------------------------------------------------------------------------
 // HTML fallback — explicit opt-in, explicitly labelled, lower confidence.
@@ -528,10 +411,18 @@ export async function searchGiteeHtml(query: string, opts: AdapterSearchOptions)
 
   const hits = parseGiteeSearchHtml(res.body, maxItems)
   if (hits.length === 0) {
+    // Measured 2026-10-04: search.gitee.com answers with an SPA shell — the
+    // result list is rendered client-side, so a 200 page legitimately carries
+    // zero anchors. Say that instead of the vague "the page structure changed",
+    // and say what would actually be needed to search code there.
     return {
       ok: false,
       results: [],
-      reason: joinReason('Gitee 网页兜底未解析出仓库链接（页面结构可能已变）', notes.join('；')),
+      reason: joinReason(
+        'Gitee 网页兜底未解析出仓库链接：实测 search.gitee.com 返回的是 SPA 外壳（结果由前端渲染，服务端 HTML 里没有链接），网页版代码搜索需要登录',
+        GITEE_LOGIN_REQUIREMENT,
+        notes.join('；'),
+      ),
       failure: 'empty',
       attempts,
     }
@@ -571,28 +462,28 @@ export async function searchGiteeHtml(query: string, opts: AdapterSearchOptions)
 }
 
 // ---------------------------------------------------------------------------
-// Combined search: API first, then (opt-in) code, then (opt-in) HTML.
+// Combined search: the repositories API, then (opt-in) the HTML page.
+//
+// There used to be a middle rung that called a "code search" API. It is gone:
+// that endpoint answers 404 (see the REMOVED note above), so the only two real
+// rungs are the repositories endpoint and the explicitly opted-in web page.
 // ---------------------------------------------------------------------------
 
 /** `search()` behind the adapter. */
 export async function searchGitee(query: string, opts: AdapterSearchOptions): Promise<AdapterOutcome> {
   const maxItems = clampMaxItems(opts.maxItems)
-  const token = tokenForAccess(opts.access, opts.token)
   const repo = await searchGiteeRepositories(query, opts)
 
-  let code: AdapterOutcome | undefined
-  if (repo.results.length === 0 && token !== undefined) {
-    code = await searchGiteeCode(query, opts)
-  }
-
-  const merged = dedupe([...repo.results, ...(code?.results ?? [])]).slice(0, maxItems)
+  // No code-search rung exists to try, so the anonymous empty array is the whole
+  // API story; `GITEE_LOGIN_REQUIREMENT` carries it into every failure reason.
+  const merged = dedupe(repo.results).slice(0, maxItems)
   if (merged.length > 0) {
     return {
       ok: true,
       results: merged,
-      reason: joinReason(repo.reason, code === undefined ? undefined : `代码搜索：${code.reason}`),
-      attempts: [...(repo.attempts ?? []), ...(code?.attempts ?? [])],
-      truncated: repo.results.length + (code?.results.length ?? 0) > maxItems,
+      reason: joinReason(repo.reason, GITEE_LOGIN_REQUIREMENT),
+      attempts: [...(repo.attempts ?? [])],
+      truncated: repo.results.length > maxItems,
     }
   }
 
@@ -601,9 +492,9 @@ export async function searchGitee(query: string, opts: AdapterSearchOptions): Pr
     return {
       ok: html.results.length > 0,
       results: html.results,
-      reason: joinReason('Gitee API 未取得结果，已按配置回退到网页兜底', repo.reason, code?.reason, html.reason),
+      reason: joinReason('Gitee API 未取得结果，已按配置回退到网页兜底', repo.reason, html.reason),
       failure: html.results.length > 0 ? undefined : html.failure ?? repo.failure ?? 'empty',
-      attempts: [...(repo.attempts ?? []), ...(code?.attempts ?? []), ...(html.attempts ?? [])],
+      attempts: [...(repo.attempts ?? []), ...(html.attempts ?? [])],
       truncated: html.truncated,
     }
   }
@@ -613,11 +504,14 @@ export async function searchGitee(query: string, opts: AdapterSearchOptions): Pr
     results: [],
     reason: joinReason(
       'Gitee 未取得结果（可开启 htmlFallback 回退到网页搜索）',
+      // Says why in the contract's own words: no v5 code endpoint (404), an
+      // anonymous repository search is `[]` (token needed), and the web code
+      // search requires a logged-in session.
+      GITEE_LOGIN_REQUIREMENT,
       repo.reason,
-      code === undefined ? undefined : `代码搜索：${code.reason}`,
     ),
-    failure: repo.failure ?? code?.failure ?? 'empty',
-    attempts: [...(repo.attempts ?? []), ...(code?.attempts ?? [])],
+    failure: repo.failure ?? 'empty',
+    attempts: [...(repo.attempts ?? [])],
   }
 }
 

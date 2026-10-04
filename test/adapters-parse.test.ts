@@ -1,44 +1,58 @@
 /**
- * 三个源适配器的解析与端点（task-5 §E，后半）。
+ * 三个源适配器的解析与端点（task-5 §E，后半；task-3 §A/§B/§C 复核）。
  *
  * All three adapters take an injected `Transport` and never fetch anything
  * themselves, so every path below is driven by a recording fake — zero network:
  *
  *   • **CSDN** — `result_vos[].title` carries `<em>` markup that must be stripped,
  *     the code block is extracted from `body`, a non-原创 item is down-weighted
- *     with 转载 named in the reason, and the endpoint is the live-probed one;
+ *     with 转载 named in the reason, and the endpoint is the live-probed one.
+ *     task-3 adds: a browser UA/Referer on every request (their absence is the
+ *     measured HTTP 521 trigger), `originalType` missing = UNKNOWN (no penalty),
+ *     and opt-in article-page completion behind `articleFetch` + a `maxDepth`
+ *     budget;
  *   • **GitHub** — the API base and the raw-file base are two INDEPENDENT paths
  *     (the probe found one reachable and the other not), repository fields map
  *     onto the unified envelope, `/search/code` refuses anonymous callers without
- *     issuing a request, and mirror strategies never receive a token;
- *   • **Gitee** — only the two real v5 endpoints are used; the endpoint that
- *     answered 404 on this host appears in NO line of code; an anonymous empty
- *     answer is reported as `empty` instead of being padded with invented rows.
+ *     issuing a request (quoting the measured 401), and mirror strategies never
+ *     receive a token;
+ *   • **Gitee** — ONLY the repositories endpoint exists. `/search/code` answers
+ *     404 (measured), so no code path may construct it, no code-search rung may
+ *     run, and the failure reason quotes `GITEE_LOGIN_REQUIREMENT` instead of
+ *     the old "code search needs a token" story.
  */
 
 import { describe, expect, it } from 'vitest'
 
 import {
+  CSDN_LOGIN_REQUIREMENT,
+  CSDN_ROBOTS_DISCLOSURE,
   CSDN_SEARCH_BASE,
   GITHUB_API_BASE,
+  GITHUB_LOGIN_REQUIREMENT,
   GITHUB_RAW_ORIGIN,
   GITEE_API_BASE,
-  GITEE_SEARCH_CODE,
+  GITEE_LOGIN_REQUIREMENT,
   GITEE_SEARCH_REPOSITORIES,
 } from '../src/contract.js'
 import {
+  CSDN_BROWSER_USER_AGENT,
+  CSDN_SEARCH_REFERER,
   buildCsdnSearchUrl,
   csdnRowsOf,
   extractCodeBlocks,
   parseCsdnTime,
   searchCsdn,
 } from '../src/sources/csdn.js'
+import * as giteeModule from '../src/sources/gitee.js'
 import {
   buildGiteeApiUrl,
   giteeHeaders,
   giteeRowsOf,
   parseGiteeRepo,
   parseGiteeSearchHtml,
+  searchGitee,
+  searchGiteeHtml,
   searchGiteeRepositories,
 } from '../src/sources/gitee.js'
 import {
@@ -205,6 +219,176 @@ describe('CSDN — 解析 result_vos[]', () => {
 })
 
 // ---------------------------------------------------------------------------
+// CSDN — 反爬头部、三态 originalType、articleFetch 文章页补齐.
+// ---------------------------------------------------------------------------
+
+describe('CSDN — 请求头（实测缺 UA/Referer 会被 521 拦截）', () => {
+  it('搜索与文章页两条路径都带浏览器 UA + Referer，cookie 逻辑不变', async () => {
+    const { transport, calls } = recordingTransport(() => jsonAnswer({ result_vos: [] }))
+    await searchCsdn('vue', { transport, token: 'csdn-session-cookie' })
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.headers?.['user-agent']).toBe(CSDN_BROWSER_USER_AGENT)
+    expect(calls[0]?.headers?.['referer']).toBe(CSDN_SEARCH_REFERER)
+    expect(calls[0]?.headers?.['cookie']).toBe('csdn-session-cookie')
+    // 常量本身必须是真实浏览器形状，而不是随便一个字符串。
+    expect(CSDN_BROWSER_USER_AGENT).toContain('Mozilla/5.0')
+    expect(CSDN_BROWSER_USER_AGENT).toContain('Chrome/126')
+  })
+})
+
+describe('CSDN — originalType 三态：缺字段 ≠ 转载', () => {
+  // 7 个字段有值：title/body/description/url/create_time/author/view。
+  // 不加 originalType 时完整度 7/8（高段），所以「未知」不该被扣分。
+  const rowWithoutType = {
+    title: 'Vue3 响应式原理',
+    body: '```ts\nconst count = ref(0)\n```',
+    description: '把响应式讲清楚',
+    url: 'https://blog.csdn.net/someone/article/details/300',
+    create_time: '2026-09-01 10:00:00',
+    author: 'someone',
+    view: 1234,
+  }
+
+  it('缺失 = 未知：不写「疑似转载」，且不比显式转载低一档', async () => {
+    const missing = recordingTransport(() => jsonAnswer({ result_vos: [rowWithoutType] }))
+    const unknownOutcome = await searchCsdn('vue', { transport: missing.transport, authenticated: true })
+
+    const reposted = recordingTransport(() =>
+      jsonAnswer({ result_vos: [{ ...rowWithoutType, originalType: '转载' }] }),
+    )
+    const repostedOutcome = await searchCsdn('vue', { transport: reposted.transport, authenticated: true })
+
+    const unknownRow = unknownOutcome.results[0]
+    const repostedRow = repostedOutcome.results[0]
+
+    expect(unknownRow?.reason).toContain('来源类型未知')
+    expect(unknownRow?.reason).not.toContain('疑似转载')
+    expect(repostedRow?.reason).toContain('疑似转载')
+
+    // 同一条 payload：显式「转载」降到 low，缺字段仍是 medium。
+    // 旧逻辑（originalType !== '原创'）会把缺字段也判成转载 → low。
+    expect(repostedRow?.confidence).toBe('low')
+    expect(unknownRow?.confidence).toBe('medium')
+  })
+
+  it('显式「原创」照旧不降权', async () => {
+    const { transport } = recordingTransport(() =>
+      jsonAnswer({ result_vos: [{ ...rowWithoutType, originalType: '原创' }] }),
+    )
+    const outcome = await searchCsdn('vue', { transport, authenticated: true })
+
+    expect(outcome.results[0]?.confidence).toBe('medium')
+    expect(outcome.results[0]?.reason).not.toContain('疑似转载')
+    expect(outcome.results[0]?.reason).not.toContain('来源类型未知')
+  })
+})
+
+describe('CSDN — articleFetch 文章页补齐（搜索结果不带正文）', () => {
+  const articleUrl = 'https://blog.csdn.net/someone/article/details/200'
+  const noCodePayload = {
+    result_vos: [
+      {
+        title: 'Vue3 <em>响应式</em> 原理详解',
+        body: '这篇文章在搜索结果里只有散文说明，没有代码块。',
+        description: '把响应式讲清楚',
+        url: articleUrl,
+        create_time: '2026-09-01 10:00:00',
+      },
+    ],
+  }
+  const articleHtml = '<html><body><pre class="language-ts">const count = ref(0)</pre></body></html>'
+
+  it('没有代码块 + articleFetch:true + maxDepth:1 → 再抓一次文章页并抽出代码', async () => {
+    const { transport, calls } = recordingTransport((request) =>
+      request.url === articleUrl ? jsonAnswer(articleHtml) : jsonAnswer(noCodePayload),
+    )
+    const outcome = await searchCsdn('vue 响应式', { transport, articleFetch: true, maxDepth: 1 })
+
+    expect(calls).toHaveLength(2)
+    expect(calls[0]?.url.startsWith(CSDN_SEARCH_BASE)).toBe(true)
+    expect(calls[1]?.url).toBe(articleUrl)
+    // 文章页请求同样要带 UA / Referer，否则会被 521 拦。
+    expect(calls[1]?.headers?.['user-agent']).toBe(CSDN_BROWSER_USER_AGENT)
+    expect(calls[1]?.headers?.['referer']).toBe(CSDN_SEARCH_REFERER)
+
+    expect(outcome.ok).toBe(true)
+    const row = outcome.results[0]
+    expect(row?.code).toContain('const count = ref(0)')
+    expect(row?.language).toBe('ts')
+    expect(row?.reason).toContain('代码来自文章页')
+    expect(row?.reason).toContain(CSDN_ROBOTS_DISCLOSURE)
+    expect(row?.is_verbatim_copy).toBe(false)
+  })
+
+  it('articleFetch 未传 → 不额外抓页，请求次数不变', async () => {
+    const { transport, calls } = recordingTransport(() => jsonAnswer(noCodePayload))
+    const outcome = await searchCsdn('vue', { transport, maxDepth: 1 })
+
+    expect(calls).toHaveLength(1)
+    expect(outcome.results).toEqual([])
+    expect(outcome.failure).toBe('not-code')
+  })
+
+  it('articleFetch:true 但 maxDepth 缺省 → 视为 0，仍然不抓', async () => {
+    const { transport, calls } = recordingTransport(() => jsonAnswer(noCodePayload))
+    const outcome = await searchCsdn('vue', { transport, articleFetch: true })
+
+    expect(calls).toHaveLength(1)
+    expect(outcome.failure).toBe('not-code')
+  })
+
+  it('文章页 HTTP 521 → 保留标题与 URL，reason 说明反爬，绝不伪造代码', async () => {
+    const { transport, calls } = recordingTransport((request) =>
+      request.url === articleUrl
+        ? { statusCode: 521, body: '<html><title>521</title></html>', finalUrl: articleUrl }
+        : jsonAnswer(noCodePayload),
+    )
+    const outcome = await searchCsdn('vue', { transport, articleFetch: true, maxDepth: 1 })
+
+    expect(calls).toHaveLength(2)
+    const row = outcome.results[0]
+    expect(row?.code).toBe('')
+    expect(row?.codeTruncated).toBe(false)
+    expect(row?.url).toBe(articleUrl)
+    expect(row?.title).toBe('Vue3 响应式 原理详解')
+    expect(row?.reason).toContain('521')
+    expect(row?.reason).toContain('反爬')
+    expect(row?.reason).toContain(CSDN_LOGIN_REQUIREMENT)
+  })
+
+  it('文章页 200 但没有代码块 → 保留该行并说明，不编造', async () => {
+    const { transport } = recordingTransport((request) =>
+      request.url === articleUrl ? jsonAnswer('<html><body><p>全是散文</p></body></html>') : jsonAnswer(noCodePayload),
+    )
+    const outcome = await searchCsdn('vue', { transport, articleFetch: true, maxDepth: 1 })
+
+    const row = outcome.results[0]
+    expect(row?.code).toBe('')
+    expect(row?.reason).toContain('没有可抽取的代码块')
+  })
+
+  it('maxDepth 是「最多抓几篇」的预算：两行无代码 + maxDepth:1 → 只抓一篇', async () => {
+    const twoRows = {
+      result_vos: [
+        { ...noCodePayload.result_vos[0] },
+        { ...noCodePayload.result_vos[0], url: 'https://blog.csdn.net/someone/article/details/201' },
+      ],
+    }
+    const { transport, calls } = recordingTransport((request) =>
+      request.url.includes('blog.csdn.net') ? jsonAnswer(articleHtml) : jsonAnswer(twoRows),
+    )
+    const outcome = await searchCsdn('vue', { transport, articleFetch: true, maxDepth: 1 })
+
+    expect(calls).toHaveLength(2)
+    expect(calls[1]?.url).toBe(articleUrl)
+    // 预算只够第一篇：第二行没有代码也没有预算，按旧行为跳过（不伪造、不越预算）。
+    expect(outcome.results).toHaveLength(1)
+    expect(outcome.reason).toContain('1 篇文章页')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // GitHub.
 // ---------------------------------------------------------------------------
 
@@ -365,6 +549,9 @@ describe('GitHub — token 策略', () => {
     expect(outcome.failure).toBe('auth-required')
     expect(outcome.results).toEqual([])
     expect(calls).toHaveLength(0)
+    // 证据不手抄：reason 引用 GITHUB_LOGIN_REQUIREMENT，其中写明实测 401。
+    expect(outcome.reason).toContain(GITHUB_LOGIN_REQUIREMENT)
+    expect(outcome.reason).toContain('401')
   })
 
   it('/search/code 带 token 时才发请求', async () => {
@@ -397,14 +584,59 @@ describe('Gitee — 只用真实存在的端点', () => {
     ).toBe(true)
   })
 
-  it('URL 构造只用契约里的两个 v5 端点', () => {
+  it('URL 构造只用仓库端点：代码搜索端点不再被任何一行代码引用', () => {
     const repos = buildGiteeApiUrl(GITEE_SEARCH_REPOSITORIES, { params: { q: 'vue', per_page: 5 } })
     expect(repos).toBe(`${GITEE_API_BASE}/search/repositories?q=vue&per_page=5`)
     expect(repos).not.toContain('/projects')
 
-    const code = buildGiteeApiUrl(GITEE_SEARCH_CODE, { params: { q: 'vue' }, token: 'gitee-tok', tokenInQuery: true })
-    expect(code.startsWith(`${GITEE_API_BASE}${GITEE_SEARCH_CODE}`)).toBe(true)
-    expect(new URL(code).searchParams.get('access_token')).toBe('gitee-tok')
+    // tokenInQuery 仍是构造器的能力（Gitee 支持 access_token 查询参数），但它现在
+    // 只可能落在仓库端点上 —— 代码搜索端点不存在，没有可落的地方。
+    const withToken = buildGiteeApiUrl(GITEE_SEARCH_REPOSITORIES, {
+      params: { q: 'vue' },
+      token: 'gitee-tok',
+      tokenInQuery: true,
+    })
+    expect(new URL(withToken).searchParams.get('access_token')).toBe('gitee-tok')
+    expect(withToken).not.toContain('/search/code')
+  })
+
+  it('适配器不再导出代码搜索：searchGiteeCode 与 GITEE_CODE_FIELDS 都已删除', () => {
+    expect(Object.keys(giteeModule)).not.toContain('searchGiteeCode')
+    expect(Object.keys(giteeModule)).not.toContain('GITEE_CODE_FIELDS')
+
+    // 源码文本：非注释行里不能再出现这个端点。注释里写它是刻意的 —— 注释正是解释
+    // 「实测 404，所以不用」的地方。
+    const codeLines = readRepoFile('src/sources/gitee.ts')
+      .split(/\r?\n/)
+      .filter((line) => !isCommentLine(line))
+    expect(codeLines.some((line) => line.includes('GITEE_SEARCH_CODE'))).toBe(false)
+    expect(codeLines.some((line) => line.includes("'/search/code'"))).toBe(false)
+  })
+
+  it('searchGitee：带 token 也不再发第二次请求；reason 引用 GITEE_LOGIN_REQUIREMENT', async () => {
+    const { transport, calls } = recordingTransport(() => jsonAnswer([]))
+    const outcome = await searchGitee('vue', { transport, token: 'gitee-tok', access: 'direct' })
+
+    expect(outcome.ok).toBe(false)
+    expect(outcome.results).toEqual([])
+    expect(outcome.reason).toContain(GITEE_LOGIN_REQUIREMENT)
+    // 旧实现会在仓库搜索为空时再打一次 /search/code（实测 404）：现在只有一次请求。
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.url).toContain(GITEE_SEARCH_REPOSITORIES)
+    expect(calls.some((call) => call.url.includes('/search/code'))).toBe(false)
+  })
+
+  it('网页兜底解析不到链接时说明是 SPA（结果由前端渲染），而不是含糊的「结构已变」', async () => {
+    const { transport } = recordingTransport(() =>
+      jsonAnswer('<html><head><title>Gitee 搜索</title></head><body><div id="app"></div></body></html>'),
+    )
+    const outcome = await searchGiteeHtml('vue', { transport })
+
+    expect(outcome.ok).toBe(false)
+    expect(outcome.results).toEqual([])
+    expect(outcome.failure).toBe('empty')
+    expect(outcome.reason).toContain('SPA')
+    expect(outcome.reason).toContain(GITEE_LOGIN_REQUIREMENT)
   })
 
   it('token 走 Bearer 头；镜像访问方式下不带凭据', () => {

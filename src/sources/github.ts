@@ -26,7 +26,7 @@
  * `deepRead()` returns `LearnNote`s, never file bodies.
  */
 
-import { GITHUB_API_BASE, GITHUB_RAW_ORIGIN } from '../contract.js'
+import { GITHUB_API_BASE, GITHUB_LOGIN_REQUIREMENT, GITHUB_RAW_ORIGIN } from '../contract.js'
 import type { CodeLearnResult, DeepReadTarget, FailureKind } from '../contract.js'
 import type {
   AdapterAttempt,
@@ -416,6 +416,11 @@ export function mapGithubCode(
 /**
  * `GET /search/code`. Without a token this answers `auth-required` and issues
  * **zero** requests, because the endpoint rejects anonymous callers.
+ *
+ * The evidence — measured 2026-10-04: anonymous `GET
+ * api.github.com/search/code?q=vue` → HTTP 401 `Requires authentication` — is
+ * quoted from `GITHUB_LOGIN_REQUIREMENT` instead of being re-typed here, so the
+ * tool reason, the connectivity panel and the README cannot drift apart.
  */
 export async function searchGithubCode(query: string, opts: AdapterSearchOptions): Promise<AdapterOutcome> {
   const attempts: AdapterAttempt[] = []
@@ -431,7 +436,10 @@ export async function searchGithubCode(query: string, opts: AdapterSearchOptions
     return {
       ok: false,
       results: [],
-      reason: 'GitHub 代码搜索需要 token（/search/code 不接受匿名调用）；未发起任何请求。',
+      reason: joinReason(
+        'GitHub 代码搜索需要 token（/search/code 不接受匿名调用）；未发起任何请求。',
+        GITHUB_LOGIN_REQUIREMENT,
+      ),
       failure: 'auth-required',
       attempts,
     }

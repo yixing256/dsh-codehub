@@ -29,12 +29,14 @@ import {
   LEARNING_ONLY_BANNER,
   LOCAL_PROXY_HELP,
   LOCAL_PROXY_SCOPE_NOTE,
+  LOGIN_REQUIREMENTS,
 } from '../src/contract.js'
 import type { CodeLearnResult, DecisionKey, SourceId } from '../src/contract.js'
 import { resolveConfig } from '../src/config.js'
 import type { CodehubConfig } from '../src/config.js'
 import { CodeSource, composeMirrorBase, orderSources, redactForDelivery, resolveAccess } from '../src/service.js'
 import type { AdapterDeepOutcome, AdapterOutcome, SourceAdapter, Transport, TransportRequest } from '../src/sources/types.js'
+import type { LocalConfig } from '../src/store.js'
 import { makeRow } from './helpers.js'
 
 const BANNER_LINE = `${LEARNING_ONLY_BANNER}\n`
@@ -135,7 +137,7 @@ describe('交付出口 — is_verbatim_copy 恒为 false，code 恒有界', () =
 
 interface Harness {
   readonly service: CodeSource
-  readonly counters: { transportFactory: number; search: number; deepRead: number }
+  readonly counters: { transportFactory: number; search: number; deepRead: number; credentialResolve: number }
   readonly queried: SourceId[]
   readonly transportCalls: TransportRequest[]
 }
@@ -144,13 +146,21 @@ interface HarnessOptions {
   readonly config?: CodehubConfig
   readonly rows?: readonly CodeLearnResult[]
   readonly failSources?: readonly SourceId[]
+  /** Stored credentials, keyed by ref. Absent = the credential service is absent. */
+  readonly credentials?: Readonly<Record<string, string>>
+  /** Canned HTTP answer for the injected transport. Absent = the transport throws. */
+  readonly respond?: (request: TransportRequest) => { readonly statusCode: number; readonly body: string }
+  /** What `$DSH_HOME/dsh-codehub.json` holds: the fallback snapshot + proxy. */
+  readonly stored?: LocalConfig
+  /** A settings namespace that IS readable (the layer that beats everything). */
+  readonly settingsValue?: CodehubConfig
 }
 
 function harness(options: HarnessOptions = {}): Harness {
   const config = options.config ?? {}
   const rows = options.rows ?? [makeRow()]
   const failing = new Set<SourceId>(options.failSources ?? [])
-  const counters = { transportFactory: 0, search: 0, deepRead: 0 }
+  const counters = { transportFactory: 0, search: 0, deepRead: 0, credentialResolve: 0 }
   const queried: SourceId[] = []
   const transportCalls: TransportRequest[] = []
 
@@ -169,30 +179,132 @@ function harness(options: HarnessOptions = {}): Harness {
   }))
 
   const store = {
-    read: async () => ({}),
+    read: async () => options.stored ?? {},
     write: async () => ({ ok: true, path: '/tmp/x', value: {} }),
     filePath: '/tmp/dsh-codehub.json',
   }
 
-  const service = new CodeSource({ get: () => undefined } as never, {
-    getConfig: () => config,
-    store: store as never,
-    adapters,
-    createTransport: () => {
-      counters.transportFactory += 1
-      const transport: Transport = async (request) => {
-        transportCalls.push(request)
-        throw new Error('测试禁止真实网络请求：transport 不应被调用')
-      }
-      return transport
+  const settings =
+    options.settingsValue === undefined
+      ? undefined
+      : {
+          available: true,
+          configure: () => () => {},
+          read: async () => ({ available: true, value: options.settingsValue, revision: 1 }),
+          patch: async () => ({ ok: true, verified: true }),
+        }
+
+  /**
+   * The credential service is `resolve()` / `describe()` ONLY — the two calls
+   * the service is allowed to make. `resolve()` is counted, which is how the
+   * "anonymous by default" rule is asserted rather than assumed.
+   */
+  const credentialsService =
+    options.credentials === undefined
+      ? undefined
+      : {
+          async resolve(ref: string) {
+            counters.credentialResolve += 1
+            const value = options.credentials?.[ref]
+            return value === undefined ? undefined : { value, source: 'test' }
+          },
+          async describe(ref: string) {
+            return { configured: options.credentials?.[ref] !== undefined, writable: true }
+          },
+        }
+
+  const service = new CodeSource(
+    { get: (name: string) => (name === 'credentials' ? credentialsService : undefined) } as never,
+    {
+      getConfig: () => config,
+      store: store as never,
+      ...(settings === undefined ? {} : { settings: settings as never }),
+      adapters,
+      createTransport: () => {
+        counters.transportFactory += 1
+        const transport: Transport = async (request) => {
+          transportCalls.push(request)
+          if (options.respond === undefined) {
+            throw new Error('测试禁止真实网络请求：transport 不应被调用')
+          }
+          const answer = options.respond(request)
+          return { statusCode: answer.statusCode, body: answer.body, finalUrl: request.url }
+        }
+        return transport
+      },
     },
-  })
+  )
 
   return { service, counters, queried, transportCalls }
 }
 
-describe('决策门禁 — 服务级：拒答时代价恰好为零网络请求', () => {
-  it('四项全未决策 → 拒答、四个问题、零 transport、零适配器调用', async () => {
+/**
+ * 配置合并的优先级 —— 回归测试，防止「用户保存的设置被 schema 默认值盖掉」再发生。
+ *
+ * THE BUG THIS PINS: `apply()` receives the schema-filled config, so EVERY key in
+ * the live config carries its default. The old order (`fallback snapshot < live
+ * config < settings`) therefore made the 0600 snapshot dead code for any defaulted
+ * key: on a real installation the settings namespace refused our writes ("no
+ * volatile fields"), the snapshot held the user's answers, and the host still
+ * answered `sourcePriority: []` — the panel showed 「尚未决定」 for decisions the
+ * user had made, and the tool gate refused to run.
+ */
+describe('服务 — 配置合并优先级（store 快照必须赢过 schema 默认值）', () => {
+  const SNAPSHOT = {
+    fallbackConfig: {
+      sourcePriority: ['github', 'gitee', 'csdn'],
+      github: { accessPriority: ['watt'] },
+      failover: { enabled: true },
+      mergeSources: true,
+      csdn: { cdpEnabled: true, cdpPort: 9333, articleFetch: true },
+    },
+  }
+
+  it('store 里的用户答案赢过「live config 的 schema 默认值」', async () => {
+    // The live config is what apply() was handed: defaults everywhere.
+    const tested = harness({ config: {}, stored: SNAPSHOT as never })
+    const resolved = await tested.service.resolve()
+
+    expect(resolved.sourcePriority).toEqual(['github', 'gitee', 'csdn'])
+    expect(resolved.github.accessPriority).toEqual(['watt'])
+    expect(resolved.failover.enabled).toBe(true)
+    expect(resolved.mergeSources).toBe(true)
+    // The CSDN switches are the case the user hit: without this, the panel's
+    // checkbox saves a value that the host then refuses to read back.
+    expect(resolved.csdn.cdpEnabled).toBe(true)
+    expect(resolved.csdn.cdpPort).toBe(9333)
+  })
+
+  it('用户已答的四项不再算「未决策」（工具可以直接跑）', async () => {
+    const tested = harness({ config: {}, stored: SNAPSHOT as never })
+    expect(await tested.service.getUnresolved()).toEqual([])
+  })
+
+  it('settings namespace 可读时仍然最权威（压过 store 快照）', async () => {
+    const tested = harness({
+      config: {},
+      stored: SNAPSHOT as never,
+      settingsValue: { sourcePriority: ['csdn'], csdn: { cdpEnabled: false } },
+    })
+    const resolved = await tested.service.resolve()
+
+    expect(resolved.sourcePriority).toEqual(['csdn'])
+    expect(resolved.csdn.cdpEnabled).toBe(false)
+    // 未被 settings 覆盖的键仍然来自 store 快照（不是被整体替换掉）。
+    expect(resolved.github.accessPriority).toEqual(['watt'])
+    expect(resolved.csdn.cdpPort).toBe(9333)
+  })
+
+  it('没有 store 快照时行为不变（默认值照旧生效）', async () => {
+    const tested = harness({ config: {} })
+    const resolved = await tested.service.resolve()
+    expect(resolved.sourcePriority).toEqual([])
+    expect(resolved.csdn.cdpEnabled).toBe(false)
+    expect(resolved.csdn.cdpPort).toBe(9222)
+  })
+})
+
+describe('决策门禁 — 服务级：拒答时代价恰好为零网络请求', () => {  it('四项全未决策 → 拒答、四个问题、零 transport、零适配器调用', async () => {
     const tested = harness({ config: {} })
     const outcome = await tested.service.search('vue 响应式')
 
@@ -203,7 +315,7 @@ describe('决策门禁 — 服务级：拒答时代价恰好为零网络请求',
     expect(outcome.reason).toContain('未发起任何网络请求')
 
     // 最强形式：连 transport 工厂都没构造过，适配器更没被碰过。
-    expect(tested.counters).toEqual({ transportFactory: 0, search: 0, deepRead: 0 })
+    expect(tested.counters).toEqual({ transportFactory: 0, search: 0, deepRead: 0, credentialResolve: 0 })
     expect(tested.queried).toEqual([])
     expect(tested.transportCalls).toEqual([])
   })
@@ -246,7 +358,7 @@ describe('决策门禁 — 服务级：拒答时代价恰好为零网络请求',
     expect(outcome.ok).toBe(false)
     expect(outcome.reason).toContain('关闭状态')
     expect(outcome.ask_user.trim().endsWith('？')).toBe(true)
-    expect(tested.counters).toEqual({ transportFactory: 0, search: 0, deepRead: 0 })
+    expect(tested.counters).toEqual({ transportFactory: 0, search: 0, deepRead: 0, credentialResolve: 0 })
   })
 })
 
@@ -434,5 +546,199 @@ describe('服务 — 纯函数：源顺序 / 镜像基址 / 访问方式', () =>
     expect(plan.available).toBe(false)
     expect(plan.notes.join(' ')).toContain('raw')
     expect(plan.apiBase).toBe('')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// probe / validateCredential / describeConfig().login (docs/DESIGN.md §7).
+//
+// These are the three answers the wizard needs, and each has an honesty rule
+// worth a test: a probe is ANONYMOUS unless asked otherwise, a login view never
+// carries a value, and a credential check reports what the provider actually
+// said (200 / 401) rather than a guess.
+// ---------------------------------------------------------------------------
+
+const GH_TOKEN_REF = 'DSH_CODEHUB_GITHUB_TOKEN'
+
+describe('服务 — probe 报告形状与「默认匿名」', () => {
+  it('逐操作给出 reachable/statusCode/requiresLogin/evidence/probedAt，且默认不解析凭据', async () => {
+    const tested = harness({
+      config: { github: { accessPriority: ['direct'] } },
+      credentials: { [GH_TOKEN_REF]: 'ghp_stored_value' },
+      respond: (request) => {
+        if (request.url.includes('/search/code')) return { statusCode: 401, body: '{"message":"Requires authentication"}' }
+        return { statusCode: 200, body: '{}' }
+      },
+    })
+
+    const report = await tested.service.probe({ source: 'github' })
+
+    expect(report.source).toBe('github')
+    expect(report.authenticated).toBe(false)
+    expect(report.probedAt).toEqual(expect.any(String))
+    expect(Number.isNaN(Date.parse(report.probedAt))).toBe(false)
+    expect(report.operations.map((check) => check.operation)).toEqual(['repo-search', 'code-search', 'file-read'])
+
+    for (const check of report.operations) {
+      expect(check.probedAt, check.operation).toBe(report.probedAt)
+      expect(typeof check.reachable, check.operation).toBe('boolean')
+      expect(check.evidence.length, check.operation).toBeGreaterThan(0)
+      // evidence 用 contract 的实测文案，不是新编的句子。
+      expect(check.evidence, check.operation).toContain(LOGIN_REQUIREMENTS.github)
+    }
+
+    const codeSearch = report.operations.find((check) => check.operation === 'code-search')
+    expect(codeSearch?.statusCode).toBe(401)
+    expect(codeSearch?.requiresLogin).toBe(true)
+    expect(codeSearch?.reachable).toBe(true)
+    expect(report.operations.find((check) => check.operation === 'repo-search')?.requiresLogin).toBe(false)
+
+    // 匿名 = 一次都不问凭据服务，也不往请求里放 token。
+    expect(tested.counters.credentialResolve).toBe(0)
+    expect(tested.transportCalls.every((call) => call.token === undefined)).toBe(true)
+    expect(JSON.stringify(report)).not.toContain('ghp_stored_value')
+  })
+
+  it('useStoredCredential 为真时才 resolve 凭据，并把它带进请求', async () => {
+    const tested = harness({
+      config: { github: { accessPriority: ['direct'] } },
+      credentials: { [GH_TOKEN_REF]: 'ghp_stored_value' },
+      respond: () => ({ statusCode: 200, body: '{}' }),
+    })
+
+    const report = await tested.service.probe({ source: 'github', useStoredCredential: true })
+
+    expect(report.authenticated).toBe(true)
+    expect(tested.counters.credentialResolve).toBe(1)
+    expect(tested.transportCalls.some((call) => call.token === 'ghp_stored_value')).toBe(true)
+    expect(JSON.stringify(report)).not.toContain('ghp_stored_value')
+  })
+
+  it('请求未得到应答时 reachable=false、statusCode=null，但报告仍然成形', async () => {
+    const tested = harness({
+      config: { gitee: {} },
+      respond: () => {
+        throw new Error('fetch failed: ECONNREFUSED')
+      },
+    })
+
+    const report = await tested.service.probe({ source: 'gitee' })
+
+    expect(report.operations.length).toBeGreaterThan(0)
+    for (const check of report.operations) {
+      expect(check.reachable).toBe(false)
+      expect(check.statusCode).toBeNull()
+      expect(check.probedAt).toBe(report.probedAt)
+    }
+  })
+
+  it('smoke() 附带 capabilities —— 由本次自检的探测派生，不额外发请求', async () => {
+    const tested = harness({
+      config: DECIDED,
+      respond: () => ({ statusCode: 200, body: '{}' }),
+    })
+
+    const report = await tested.service.smoke()
+
+    expect(report.capabilities.map((entry) => entry.source)).toEqual(['github', 'gitee', 'csdn'])
+    expect(report.capabilities.every((entry) => entry.authenticated === false)).toBe(true)
+    expect(report.capabilities.every((entry) => entry.operations.length > 0)).toBe(true)
+    // The request budget is part of the design (docs/DESIGN.md §7.5): a self-check
+    // that re-probed every operation would turn one click into eleven requests.
+    // One transport per source, and no direct probe request at all, is the budget.
+    expect(tested.counters.transportFactory).toBe(3)
+    expect(tested.transportCalls).toHaveLength(0)
+  })
+})
+
+describe('服务 — validateCredential 只报实测结论', () => {
+  const GITHUB_200 = JSON.stringify({ login: 'octocat', id: 1 })
+
+  it('HTTP 200 → valid，并允许回显「你自己的身份」', async () => {
+    const tested = harness({
+      config: { github: { accessPriority: ['direct'] } },
+      credentials: { [GH_TOKEN_REF]: 'ghp_stored_value' },
+      respond: () => ({ statusCode: 200, body: GITHUB_200 }),
+    })
+
+    const result = await tested.service.validateCredential('github')
+
+    expect(result.verdict).toBe('valid')
+    expect(result.statusCode).toBe(200)
+    expect(result.account).toBe('octocat')
+    expect(tested.transportCalls).toHaveLength(1)
+    expect(tested.transportCalls[0]?.url).toBe('https://api.github.com/user')
+    expect(tested.transportCalls[0]?.token).toBe('ghp_stored_value')
+    // 身份可以回显，凭据不行。
+    expect(JSON.stringify(result)).not.toContain('ghp_stored_value')
+  })
+
+  it('HTTP 401 → invalid，不回显任何账号', async () => {
+    const tested = harness({
+      config: { github: { accessPriority: ['direct'] } },
+      credentials: { [GH_TOKEN_REF]: 'ghp_stored_value' },
+      respond: () => ({ statusCode: 401, body: '{"message":"Bad credentials"}' }),
+    })
+
+    const result = await tested.service.validateCredential('github')
+
+    expect(result.verdict).toBe('invalid')
+    expect(result.statusCode).toBe(401)
+    expect(result.account).toBeNull()
+    expect(result.reason).toContain('401')
+  })
+
+  it('没有凭据时 → unknown，且一次网络请求都不发', async () => {
+    const tested = harness({ config: { github: { accessPriority: ['direct'] } }, respond: () => ({ statusCode: 200, body: '{}' }) })
+
+    const result = await tested.service.validateCredential('github')
+
+    expect(result.verdict).toBe('unknown')
+    expect(result.statusCode).toBeNull()
+    expect(tested.transportCalls).toEqual([])
+  })
+
+  it('CSDN 没有校验接口：没有 cookie 时诚实返回 unknown，不编造结论', async () => {
+    const tested = harness({ config: DECIDED, respond: () => ({ statusCode: 200, body: '{}' }) })
+
+    const result = await tested.service.validateCredential('csdn')
+
+    expect(result.verdict).toBe('unknown')
+    expect(result.reason).toContain('CSDN')
+    expect(tested.transportCalls).toEqual([])
+  })
+})
+
+describe('服务 — describeConfig().login 只暴露布尔与契约文案', () => {
+  it('requirements / oauth 布尔 / guides 都在，且 client id 与 secret 的值一次都不出现', async () => {
+    const tested = harness({
+      config: {
+        ...DECIDED,
+        github: { accessPriority: ['direct'], oauthClientId: 'gh-client-id-public' },
+        gitee: { oauthClientId: 'gitee-client-id-public' },
+      },
+      credentials: { DSH_CODEHUB_GITEE_OAUTH_CLIENT_SECRET: 'gitee-secret-value' },
+    })
+
+    const view = await tested.service.describeConfig()
+
+    expect(view.login.requirements).toEqual(LOGIN_REQUIREMENTS)
+    expect(view.login.oauth).toEqual({ github: true, gitee: true })
+    expect(Object.keys(view.login.guides).length).toBeGreaterThan(0)
+
+    const rendered = JSON.stringify(view.login)
+    expect(rendered).not.toContain('gh-client-id-public')
+    expect(rendered).not.toContain('gitee-client-id-public')
+    expect(rendered).not.toContain('gitee-secret-value')
+    for (const value of Object.values(view.login.oauth)) expect(typeof value).toBe('boolean')
+  })
+
+  it('缺 client id / secret 时布尔为 false（不是「有值但没配齐」）', async () => {
+    const none = harness({ config: DECIDED })
+    expect((await none.service.describeConfig()).login.oauth).toEqual({ github: false, gitee: false })
+
+    // client id 有了但 Gitee 的 secret 还没存：仍然 false —— 授权码流程缺一不可。
+    const half = harness({ config: { ...DECIDED, gitee: { oauthClientId: 'gitee-client-id-public' } } })
+    expect((await half.service.describeConfig()).login.oauth).toEqual({ github: false, gitee: false })
   })
 })

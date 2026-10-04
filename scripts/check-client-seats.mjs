@@ -310,6 +310,34 @@ for (const key of ['entry.bothDesc', 'entry.sidebarDesc', 'entry.settingsDesc'])
 const panelMarkup = renderSeat('main', { slot: 'main' })
 check(panelMarkup.length > 0, 'the main-slot panel renders markup')
 
+// ---------------------------------------------------------------------------
+// 3b. The connectivity card is a GUI, not a JSON dump (user requirement)
+// ---------------------------------------------------------------------------
+//
+// The shipped bundle used to render `<pre>{JSON.stringify(smoke, null, 2)}</pre>`
+// for the self-check. The requirement is now the opposite: three fixed rows
+// (GitHub / Gitee / CSDN) whose failed row is followed by its failure reason, and
+// no raw payload anywhere. Both halves are asserted against the BUILT artifact:
+// the source-level variant lives in test/connectivity-view.test.ts.
+check(
+  !source.includes('JSON.stringify(smoke'),
+  'the client bundle never stringifies the self-check payload (no JSON dump)',
+)
+check(
+  !/<pre[^>]*>/.test(settingsMarkup + panelMarkup),
+  'neither seat renders a raw <pre> payload block',
+)
+for (const source of ['GitHub', 'Gitee', 'CSDN']) {
+  check(
+    settingsMarkup.includes(source) || panelMarkup.includes(source),
+    `the connectivity GUI names ${source}`,
+  )
+}
+check(
+  settingsMarkup.includes(MARK('connect.title')) || panelMarkup.includes(MARK('connect.title')),
+  'the connectivity card renders its own title (not the old probe dump)',
+)
+
 const loginMarkup = renderSeat('shell.overlay', { slot: 'shell.overlay' })
 check(typeof loginMarkup === 'string', 'the login overlay seat is renderable')
 

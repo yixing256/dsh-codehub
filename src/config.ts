@@ -51,15 +51,18 @@
 import Schema from '@deepseek-ai/schemastery'
 
 import {
+  CDP_DEFAULT_PORT,
   CSDN_API_NOTE,
   CSDN_SEARCH_BASE,
   DEEP_READ_TARGETS,
   DEFAULT_LIMITS,
   GITHUB_ACCESS,
   GITEE_API_BASE,
+  GITEE_OAUTH_SECRET_REF,
   HARD_LIMITS,
   LOCAL_PROXY_HELP,
   LOCAL_PROXY_LABEL,
+  OAUTH_CALLBACK_PATH,
   SOURCES,
 } from './contract.js'
 import type { DeepReadTarget, GithubAccessId, SourceId } from './contract.js'
@@ -89,6 +92,21 @@ export const SCHEMA_DEFAULTS = {
   announceToAgent: true,
   htmlFallback: true,
   banner: true,
+  /**
+   * CSDN article pages carry the code blocks, so the second fetch is on by
+   * default; it is a switch rather than a silent behaviour so a user can trade
+   * one extra request per hit for fewer requests.
+   */
+  articleFetch: true,
+  /** CDP cookie capture is a real security trade: opt-in, never on by default. */
+  cdpEnabled: false,
+  cdpPort: CDP_DEFAULT_PORT,
+  /**
+   * Auto-save the settings form. ON by default because the user asked for it
+   * ("每改一处自动保存"), and switchable because the first version was not — which
+   * left the manual button permanently disabled and the save bar useless.
+   */
+  autoSave: true,
 } as const
 
 /**
@@ -154,6 +172,13 @@ export const Config = Schema.object({
       .default([])
       .description('raw 文件镜像基址。本机实测 raw.githubusercontent.com 不可直连，必须依赖此项；空 = raw 下载不可用。'),
     localProxy: Schema.string().default('').description(LOCAL_PROXY_FIELD_DESCRIPTION),
+    oauthClientId: Schema.string()
+      .default('')
+      .description(
+        '你的 GitHub OAuth App 的 Client ID（公开值，不是 secret）。在 https://github.com/settings/developers 新建 OAuth App 后获得。' +
+          '设备码流程不需要 client_secret，但必须在该 App 里勾选 Enable Device Flow，否则 https://github.com/login/device/code 会直接报错。' +
+          '留空 = 不使用 GitHub 浏览器登录，仍可粘贴 Personal Access Token。',
+      ),
   }).description('GitHub 访问方式与镜像基址（docs/DESIGN.md §3）。'),
 
   gitee: Schema.object({
@@ -163,6 +188,20 @@ export const Config = Schema.object({
     htmlFallback: Schema.boolean()
       .default(SCHEMA_DEFAULTS.htmlFallback)
       .description('JSON 端点返回空结果时，是否允许回退抓取 HTML 页面；回退结果会标注来源并降低置信度。'),
+    oauthClientId: Schema.string()
+      .default('')
+      .description(
+        '你的 Gitee 第三方应用的 Client ID（公开值）。在 https://gitee.com/oauth/applications 创建应用后获得；' +
+          'Gitee 没有设备码、也不支持 PKCE，只能走授权码流程，因此必须同时提供 client secret —— ' +
+          `secret 绝不写进本配置，它只存在凭据服务里（${GITEE_OAUTH_SECRET_REF}）。留空 = 不使用 Gitee 浏览器登录。`,
+      ),
+    oauthRedirectUri: Schema.string()
+      .default('')
+      .description(
+        'Gitee 授权回调地址，必须与你在 Gitee 应用里登记的地址完全一致（Gitee 不做模糊匹配，多一个斜杠都会失败）。' +
+          `留空 = 运行时按本机请求头推导为 http://<host>${OAUTH_CALLBACK_PATH}，适用于直接用 127.0.0.1 打开设置页的常见情形；` +
+          '只有当你从别的主机 / 端口访问设置页，或应用里登记的是另一个地址时才需要手填。',
+      ),
   }).description('Gitee 访问设置。无 token 时仍允许只打公开端点，空结果标为 empty（不伪造数据）。'),
 
   csdn: Schema.object({
@@ -172,7 +211,41 @@ export const Config = Schema.object({
     htmlFallback: Schema.boolean()
       .default(SCHEMA_DEFAULTS.htmlFallback)
       .description('搜索接口返回空结果时，是否允许回退抓取 HTML 页面；回退结果会标注来源并降低置信度。'),
+    articleFetch: Schema.boolean()
+      .default(SCHEMA_DEFAULTS.articleFetch)
+      .description(
+        '是否允许为命中的搜索结果再抓一次文章页。为什么默认开：实测搜索接口 30 条里只有 6 条带正文，代码通常只在文章页的 <pre> 里。' +
+          '文章页必须带浏览器 UA / Referer，否则会被 HTTP 521 反爬拦截 —— 本插件会自动带上这两个头，代价是这类请求强制走 Node 直连传输（harness 通道不接受请求头）。',
+      ),
+    cdpEnabled: Schema.boolean()
+      .default(SCHEMA_DEFAULTS.cdpEnabled)
+      .description(
+        '实验性：允许通过浏览器调试端口（CDP）读取 CSDN 登录 cookie。默认关闭，因为代价是真实的：' +
+          '你必须用 --remote-debugging-port 启动浏览器，该端口对本机任何进程开放。' +
+          '本插件不打包浏览器、不读 cookie 数据库（不碰 DPAPI / App-Bound）、不装根证书、不起代理；' +
+          '即使开启，也只有收到显式带 consent 的请求时才会连 127.0.0.1。',
+      ),
+    cdpPort: Schema.number()
+      .default(SCHEMA_DEFAULTS.cdpPort)
+      .description(
+        `浏览器调试端口。默认 ${CDP_DEFAULT_PORT}，即 Chrome / Edge 的 --remote-debugging-port 常用值。` +
+          '取值收敛到 1..65535，越界会被夹回边界值而不是让请求失败。',
+      ),
   }).description('CSDN 访问设置。CSDN 权重最低，只作补充。'),
+
+  /**
+   * Browser-half behaviour. Not a decision (nothing here blocks the tool), just a
+   * preference the user owns — which is exactly why it must be switchable rather
+   * than baked into the writer.
+   */
+  ui: Schema.object({
+    autoSave: Schema.boolean()
+      .default(SCHEMA_DEFAULTS.autoSave)
+      .description(
+        '改完设置后是否自动保存（默认开启，改完约 0.7 秒写入 host，连续编辑合并成一次）。' +
+          '关闭后改动只会留在草稿里，需要你点「保存到 host」；想临时手动落地时，保存栏的按钮在待保存状态下也能点。',
+      ),
+  }).description('界面行为。与工具能否运行无关，纯偏好。'),
 
   failover: Schema.object({
     // NO .default() — undefined means "the user has not been asked yet".
@@ -249,13 +322,19 @@ export interface CodehubConfig {
   readonly announceToAgent?: boolean | null
   readonly sourcePriority?: readonly string[] | null
   readonly github?: GithubConfigInput | null
-  readonly gitee?: EndpointConfigInput | null
-  readonly csdn?: EndpointConfigInput | null
+  readonly gitee?: GiteeConfigInput | null
+  readonly csdn?: CsdnConfigInput | null
   readonly failover?: FailoverConfigInput | null
   readonly mergeSources?: boolean | null
   readonly limits?: LimitsInput | null
   readonly marking?: MarkingConfigInput | null
   readonly deepRead?: DeepReadConfigInput | null
+  readonly ui?: UiConfigInput | null
+}
+
+/** Browser-half preferences. Nothing here can block the tool. */
+export interface UiConfigInput {
+  readonly autoSave?: boolean | null
 }
 
 export interface GithubConfigInput {
@@ -264,11 +343,26 @@ export interface GithubConfigInput {
   readonly webProxyBases?: readonly string[] | null
   readonly rawMirrorBases?: readonly string[] | null
   readonly localProxy?: string | null
+  /** The user's own OAuth App id. A public value — a client SECRET is never here. */
+  readonly oauthClientId?: string | null
 }
 
 export interface EndpointConfigInput {
   readonly apiBase?: string | null
   readonly htmlFallback?: boolean | null
+}
+
+/** Gitee adds the authorization-code flow, which needs an app id and a callback. */
+export interface GiteeConfigInput extends EndpointConfigInput {
+  readonly oauthClientId?: string | null
+  readonly oauthRedirectUri?: string | null
+}
+
+/** CSDN adds the article-page fetch and the experimental CDP capture. */
+export interface CsdnConfigInput extends EndpointConfigInput {
+  readonly articleFetch?: boolean | null
+  readonly cdpEnabled?: boolean | null
+  readonly cdpPort?: number | null
 }
 
 export interface FailoverConfigInput {
@@ -323,11 +417,26 @@ export interface ResolvedGithubConfig {
   readonly webProxyBases: readonly string[]
   readonly rawMirrorBases: readonly string[]
   readonly localProxy: string
+  /** Empty = no GitHub browser login offered; a PAT paste remains available. */
+  readonly oauthClientId: string
 }
 
 export interface ResolvedEndpointConfig {
   readonly apiBase: string
   readonly htmlFallback: boolean
+}
+
+export interface ResolvedGiteeConfig extends ResolvedEndpointConfig {
+  readonly oauthClientId: string
+  /** Empty = derive `http://<request host>${OAUTH_CALLBACK_PATH}` at request time. */
+  readonly oauthRedirectUri: string
+}
+
+export interface ResolvedCsdnConfig extends ResolvedEndpointConfig {
+  readonly articleFetch: boolean
+  readonly cdpEnabled: boolean
+  /** Always inside 1..65535 — clamped by `resolveConfig()`. */
+  readonly cdpPort: number
 }
 
 export interface ResolvedFailoverConfig {
@@ -343,14 +452,16 @@ export interface ResolvedConfig {
   readonly announceToAgent: boolean
   readonly sourcePriority: readonly SourceId[]
   readonly github: ResolvedGithubConfig
-  readonly gitee: ResolvedEndpointConfig
-  readonly csdn: ResolvedEndpointConfig
+  readonly gitee: ResolvedGiteeConfig
+  readonly csdn: ResolvedCsdnConfig
   readonly failover: ResolvedFailoverConfig
   /** `undefined` = still undecided; `false` = decided not to merge. */
   readonly mergeSources: boolean | undefined
   readonly limits: ResolvedLimits
   readonly marking: { readonly banner: true }
   readonly deepRead: { readonly targets: readonly DeepReadTarget[] }
+  /** Browser-half preferences (no decision semantics here). */
+  readonly ui: { readonly autoSave: boolean }
 }
 
 // ---------------------------------------------------------------------------
@@ -423,10 +534,11 @@ export function resolveConfig(
   // Explicit annotations matter: without them the ternary widens to
   // `X | {}` and every property read below becomes a type error.
   const github: GithubConfigInput = isRecord(input.github) ? input.github : {}
-  const gitee: EndpointConfigInput = isRecord(input.gitee) ? input.gitee : {}
-  const csdn: EndpointConfigInput = isRecord(input.csdn) ? input.csdn : {}
+  const gitee: GiteeConfigInput = isRecord(input.gitee) ? input.gitee : {}
+  const csdn: CsdnConfigInput = isRecord(input.csdn) ? input.csdn : {}
   const failover: FailoverConfigInput = isRecord(input.failover) ? input.failover : {}
   const deepRead: DeepReadConfigInput = isRecord(input.deepRead) ? input.deepRead : {}
+  const ui: UiConfigInput = isRecord(input.ui) ? input.ui : {}
 
   const placement = readString(input.entryPlacement)
   const entryPlacement = (ENTRY_PLACEMENTS as readonly string[]).includes(placement)
@@ -449,14 +561,27 @@ export function resolveConfig(
       webProxyBases: readStringList(github.webProxyBases),
       rawMirrorBases: readStringList(github.rawMirrorBases),
       localProxy,
+      oauthClientId: readString(github.oauthClientId),
     },
     gitee: {
       apiBase: readBase(gitee.apiBase),
       htmlFallback: readBooleanOr(gitee.htmlFallback, SCHEMA_DEFAULTS.htmlFallback),
+      oauthClientId: readString(gitee.oauthClientId),
+      oauthRedirectUri: readString(gitee.oauthRedirectUri),
     },
     csdn: {
       apiBase: readBase(csdn.apiBase),
       htmlFallback: readBooleanOr(csdn.htmlFallback, SCHEMA_DEFAULTS.htmlFallback),
+      articleFetch: readBooleanOr(csdn.articleFetch, SCHEMA_DEFAULTS.articleFetch),
+      cdpEnabled: readBooleanOr(csdn.cdpEnabled, SCHEMA_DEFAULTS.cdpEnabled),
+      // A port outside the TCP range is not an answer, it is a typo: clamp it so
+      // the CDP request can never be aimed at host 0 or >65535.
+      cdpPort: clampNumber(csdn.cdpPort, 1, 65535, SCHEMA_DEFAULTS.cdpPort),
+    },
+    // A preference with a real default: non-boolean means "use the default", not
+    // "undecided" (nothing here blocks the tool, unlike the four decisions).
+    ui: {
+      autoSave: readBooleanOr(ui.autoSave, SCHEMA_DEFAULTS.autoSave),
     },
     failover: {
       enabled: readBoolean(failover.enabled),
@@ -490,14 +615,26 @@ const TOP_LEVEL_KEYS = [
   'limits',
   'marking',
   'deepRead',
+  'ui',
 ] as const
 
-const GITHUB_KEYS = ['accessPriority', 'apiBase', 'webProxyBases', 'rawMirrorBases', 'localProxy'] as const
-const ENDPOINT_KEYS = ['apiBase', 'htmlFallback'] as const
+const GITHUB_KEYS = ['accessPriority', 'apiBase', 'webProxyBases', 'rawMirrorBases', 'localProxy', 'oauthClientId'] as const
+/**
+ * Gitee and CSDN no longer share one key list.
+ *
+ * They used to, which meant `csdn` accepted a `oauthRedirectUri` and `gitee`
+ * accepted `cdpPort` — harmless-looking, but the split is what keeps the two
+ * credential stories (authorization code vs cookie) from bleeding into each
+ * other. Nested keys that are not listed are rejected BY NAME, which is also how
+ * a nested `oauthClientSecret` is refused.
+ */
+const GITEE_KEYS = ['apiBase', 'htmlFallback', 'oauthClientId', 'oauthRedirectUri'] as const
+const CSDN_KEYS = ['apiBase', 'htmlFallback', 'articleFetch', 'cdpEnabled', 'cdpPort'] as const
 const FAILOVER_KEYS = ['enabled', 'chain'] as const
 const LIMITS_KEYS = ['timeoutMs', 'retries', 'maxDepth', 'maxItems', 'maxCodeChars'] as const
 const MARKING_KEYS = ['banner'] as const
 const DEEP_READ_KEYS = ['targets'] as const
+const UI_KEYS = ['autoSave'] as const
 
 /**
  * A key that must never be persisted by this plugin, anywhere.
@@ -609,7 +746,8 @@ export function splitConfigPatch(patch: unknown): PatchSplitResult {
     }
 
     if (key === 'gitee' || key === 'csdn') {
-      settings[key] = isRecord(value) ? pickKeys(value, ENDPOINT_KEYS, rejected) : value
+      const allowed: readonly string[] = key === 'gitee' ? GITEE_KEYS : CSDN_KEYS
+      settings[key] = isRecord(value) ? pickKeys(value, allowed, rejected) : value
       continue
     }
 
@@ -630,6 +768,11 @@ export function splitConfigPatch(patch: unknown): PatchSplitResult {
 
     if (key === 'deepRead') {
       settings.deepRead = isRecord(value) ? pickKeys(value, DEEP_READ_KEYS, rejected) : value
+      continue
+    }
+
+    if (key === 'ui') {
+      settings.ui = isRecord(value) ? pickKeys(value, UI_KEYS, rejected) : value
       continue
     }
 
@@ -658,13 +801,14 @@ export interface ConfigJsonView {
   readonly announceToAgent: boolean
   readonly sourcePriority: readonly SourceId[]
   readonly github: ConfigJsonViewGithub
-  readonly gitee: ResolvedEndpointConfig
-  readonly csdn: ResolvedEndpointConfig
+  readonly gitee: ResolvedGiteeConfig
+  readonly csdn: ResolvedCsdnConfig
   readonly failover: { readonly enabled: boolean | null; readonly chain: readonly GithubAccessId[] }
   readonly mergeSources: boolean | null
   readonly limits: ResolvedLimits
   readonly marking: { readonly banner: true }
   readonly deepRead: { readonly targets: readonly DeepReadTarget[] }
+  readonly ui: { readonly autoSave: boolean }
 }
 
 /** `undefined` -> `null`, so "undecided" survives JSON serialisation. */
@@ -690,6 +834,7 @@ export function toJsonView(config: ResolvedConfig): ConfigJsonView {
     limits: { ...config.limits },
     marking: { banner: true },
     deepRead: { targets: [...config.deepRead.targets] },
+    ui: { ...config.ui },
   }
 }
 

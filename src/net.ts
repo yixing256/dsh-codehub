@@ -497,6 +497,13 @@ export interface TransportPlan {
   readonly proxyConfigured: boolean
   /** True only on the `node` channel — 备注①. */
   readonly proxyApplied: boolean
+  /**
+   * True when the header rule (not the token or the proxy) is what moved this
+   * request off the harness channel. The transport uses it for the ONE thing it
+   * is allowed to do about a node-channel failure: fall back to `dsh-web` and
+   * say out loud that the headers were dropped.
+   */
+  readonly headersForcedNode: boolean
   /** The sentence explaining any setting that was NOT applied. */
   readonly reason?: string
   readonly notes: readonly string[]
@@ -576,6 +583,28 @@ export function planRequest(input: PlanInput): TransportPlan {
     notes.push(`访问方式选择了「本机代理」，该方式${LOCAL_PROXY_SCOPE_NOTE}，已改走 node 通道。`)
   }
 
+  // Headers force the node channel for the same structural reason a credential
+  // does: `ctx.web.fetch` takes `{ url }` and nothing else, so a User-Agent /
+  // Referer / cookie header would be dropped without a trace. CSDN article pages
+  // answer HTTP 521 to a headerless request (docs/DESIGN.md §7.1), so silently
+  // losing them turns a reachable page into a fake anti-bot failure.
+  let headersDroppedNote: string | undefined
+  let headersForcedNode = false
+  if (Object.keys(headers).length > 0 && transport === 'dsh-web') {
+    if (nodeChannelAvailable()) {
+      transport = 'node'
+      headersForcedNode = true
+      notes.push(
+        '本次请求带有自定义请求头（如 User-Agent / Referer / Cookie），而 DSH 自带 web 通道只接收 { url } 并会丢弃它们；已改走 Node 直连传输。',
+      )
+    } else {
+      // No local fetch: the request can still go out, but honestly degraded.
+      headersDroppedNote =
+        '本进程没有可用的 fetch，无法把请求改走 Node 直连传输：本次请求头会被丢弃，CSDN 文章页可能被 HTTP 521 反爬拦截。'
+      notes.push(headersDroppedNote)
+    }
+  }
+
   // 3. proxy application -------------------------------------------------
   let proxyApplied = false
   let reason: string | undefined
@@ -602,6 +631,7 @@ export function planRequest(input: PlanInput): TransportPlan {
     }
   }
 
+  if (reason === undefined && headersDroppedNote !== undefined) reason = headersDroppedNote
   if (reason !== undefined) notes.push(reason)
 
   return {
@@ -614,6 +644,7 @@ export function planRequest(input: PlanInput): TransportPlan {
     ...(proxy === undefined ? {} : { proxy }),
     proxyConfigured,
     proxyApplied,
+    headersForcedNode,
     ...(reason === undefined ? {} : { reason }),
     notes,
     blocked,
@@ -627,6 +658,8 @@ export function planRequest(input: PlanInput): TransportPlan {
 export interface FetchInit {
   readonly method?: string
   readonly headers?: Record<string, string>
+  /** Request body. Added for the OAuth POST seam; the GET paths never set it. */
+  readonly body?: string
   readonly signal?: AbortSignal
   readonly redirect?: 'follow' | 'manual' | 'error'
 }
@@ -646,6 +679,19 @@ function defaultFetch(): FetchLike {
     throw new TransportError('network', '本进程没有可用的 fetch（需要 Node ^22.19.0 || >=24.0.0）。')
   }
   return candidate as FetchLike
+}
+
+/**
+ * Can THIS process open its own connection (the `node` channel)?
+ *
+ * `planRequest()` is pure apart from this check, and it needs the answer for one
+ * decision: a request that carries headers cannot use the harness channel (which
+ * accepts `{ url }` only). When there is no local `fetch` the request still goes
+ * out — over the harness channel, with its headers dropped — and the `reason`
+ * says so instead of failing silently.
+ */
+export function nodeChannelAvailable(): boolean {
+  return typeof (globalThis as { fetch?: unknown }).fetch === 'function'
 }
 
 // ---------------------------------------------------------------------------
@@ -707,14 +753,17 @@ export function createTransport(deps: TransportDeps = {}): Transport {
 
     /** True once the harness channel has been abandoned for the node channel. */
     let fellBackToNode = false
+    /** True once a header-carrying node request has been handed to the web channel. */
+    let fellBackToWeb = false
 
-    // `attempt` counts RETRIES; the loop guard is deliberately one larger so the
-    // single channel fallback is never charged against the retry budget. With
-    // `retries: 0` (a legal setting) the fallback must still happen — a channel
-    // switch is not a retry. Reported by tests-verify.
+    // `attempt` counts RETRIES; the loop guard is deliberately larger than the
+    // retry budget so the channel fallbacks are never charged against it. There
+    // are at most TWO of them (web -> node, and node -> web for a request whose
+    // headers forced node), and with `retries: 0` (a legal setting) both must
+    // still happen — a channel switch is not a retry.
     let attempt = 0
     let lastFailure: TransportError | undefined
-    for (let guard = 0; guard <= retryBudget + 1; guard += 1) {
+    for (let guard = 0; guard <= retryBudget + 2; guard += 1) {
       try {
         const response = await send(plan, deps, request.signal)
         if (shouldRetryStatus(response.statusCode) && attempt < retryBudget) {
@@ -756,6 +805,32 @@ export function createTransport(deps: TransportDeps = {}): Transport {
           continue
         }
 
+        // The mirror image: this request only left the harness channel because it
+        // carries headers, and this process cannot reach the network itself. Going
+        // back to `dsh-web` keeps the plugin working on a host where only the
+        // harness has egress — at the honest price of dropping the headers, which
+        // the `reason` says out loud. Never done for a credential (the harness
+        // channel cannot carry one) and never when a proxy is configured (that
+        // would bypass the proxy the user asked for).
+        if (
+          plan.transport === 'node' &&
+          plan.headersForcedNode &&
+          !fellBackToWeb &&
+          deps.transport === undefined &&
+          deps.web !== undefined &&
+          plan.token === undefined &&
+          plan.proxyConfigured === false &&
+          failure.kind === 'network'
+        ) {
+          fellBackToWeb = true
+          plan = replanOnWeb(planInput, failure)
+          logger('Node 直连传输不可用，回退到 DSH web 通道（请求头会被丢弃）', {
+            kind: failure.kind,
+            host: safeUrlLabel(plan.url),
+          })
+          continue
+        }
+
         if (!isTransportRetryable(failure.kind) || attempt >= retryBudget) throw failure
         logger('传输失败，重试中', {
           kind: failure.kind,
@@ -783,6 +858,25 @@ function replanOnNode(planInput: PlanInput, failure: TransportError): TransportP
     ...replanned,
     notes: [...replanned.notes, note],
     reason: replanned.reason ?? note,
+  }
+}
+
+/** Note attached when a header-carrying request loses its headers on `dsh-web`. */
+export const WEB_CHANNEL_HEADER_LOSS_NOTE =
+  'Node 直连传输不可用（network），已回退到 DSH 自带 web 通道重试一次：该通道只接收 { url }，本次请求头（User-Agent / Referer 等）会被丢弃，CSDN 文章页可能被 HTTP 521 反爬拦截。'
+
+function replanOnWeb(planInput: PlanInput, failure: TransportError): TransportPlan {
+  // The headers are dropped HERE on purpose, not by accident: keeping them would
+  // let the header rule move the request straight back to `node`, which is the
+  // channel that just failed. The web channel cannot express them anyway — that
+  // is the whole reason this fallback has to say so in `reason`.
+  const replanned = planRequest({ ...planInput, headers: undefined, transport: 'dsh-web' })
+  const detail = failure.message.trim().length > 0 ? `（通道错误：${failure.message}）` : ''
+  const note = `${WEB_CHANNEL_HEADER_LOSS_NOTE}${detail}`
+  return {
+    ...replanned,
+    notes: [...replanned.notes, note],
+    reason: note,
   }
 }
 
@@ -921,12 +1015,20 @@ interface ProxyAnswer {
   readonly location?: string
 }
 
+/**
+ * One request/answer over a fresh tunnel.
+ *
+ * `init` exists for the OAuth POST seam: the tunnel, the header plumbing and the
+ * error classification are identical for GET and POST, so the method and the
+ * body are the only things the caller ever varies.
+ */
 async function proxyRequestOnce(
   url: URL,
   plan: TransportPlan,
   proxy: ProxySpec,
   signal: AbortSignal | undefined,
   timeoutMs: number,
+  init?: { readonly method: string; readonly body: string },
 ): Promise<ProxyAnswer> {
   const tls = url.protocol === 'https:'
   const target: TunnelTarget = {
@@ -936,7 +1038,7 @@ async function proxyRequestOnce(
   }
 
   const options: Record<string, unknown> = {
-    method: 'GET',
+    method: init?.method ?? 'GET',
     host: target.host,
     port: target.port,
     path: `${url.pathname}${url.search}`,
@@ -993,7 +1095,7 @@ async function proxyRequestOnce(
     active?.on('error', (error: Error) => {
       reject(toTransportError(error, plan))
     })
-    active?.end()
+    active?.end(init?.body)
   })
 }
 
@@ -1261,4 +1363,159 @@ async function openTunnel(
     socket.destroy()
     throw toTransportError(error)
   }
+}
+
+// ---------------------------------------------------------------------------
+// The POST seam (docs/DESIGN.md §7.2).
+//
+// WHY A SECOND SHAPE EXISTS AT ALL
+// --------------------------------
+// OAuth token exchanges are `POST` with an `application/x-www-form-urlencoded`
+// body, and the ordinary `Transport` is GET-only by construction — the harness
+// channel takes a bare `{ url }`, so it cannot carry a form body (or a client
+// secret) at all. Rather than widen the transport every adapter uses, exactly
+// ONE additional egress shape is added, and it is deliberately the narrowest
+// thing that works:
+//
+//   • official provider hosts only (`github.com` / `gitee.com` and subdomains);
+//     a credential-bearing POST must never ride a mirror or third-party relay,
+//     which is the same rule as `TOKEN_FORBIDDEN_ACCESS` (docs/DESIGN.md §7.2);
+//   • https only;
+//   • the body is always a URL-encoded form built from `request.form`.
+//
+// Only `src/oauth.ts` calls it. HTTP answers (including 4xx/5xx) are VALUES, the
+// same convention the adapters follow; only a network/timeout/config failure
+// throws, and it throws the existing `TransportError`.
+// ---------------------------------------------------------------------------
+
+/**
+ * The official hosts (and their subdomains) the POST seam may talk to.
+ *
+ * `github.com` / `gitee.com` are the OAuth hosts; `api.` / `login.` / `oauth.`
+ * only ever appear as SUBDOMAINS or paths of those two, so a suffix match is the
+ * correct test — and it is checked before any socket is opened.
+ */
+export const POST_ALLOWED_HOSTS: readonly string[] = ['github.com', 'gitee.com']
+
+/** One form POST as `src/oauth.ts` needs it. Shape frozen in Phase 0. */
+export interface PostRequest {
+  readonly url: string
+  readonly form: Readonly<Record<string, string>>
+  readonly headers?: Readonly<Record<string, string>>
+  /** Local proxy address (备注①), applied only on the node channel. */
+  readonly proxy?: string
+  readonly timeoutMs: number
+  readonly signal?: AbortSignal
+}
+
+export interface PostResponse {
+  readonly statusCode: number
+  readonly body: string
+}
+
+export type PostLike = (request: PostRequest) => Promise<PostResponse>
+
+/** True when `host` is one of the official provider hosts (or a subdomain). */
+export function isOfficialPostHost(host: string): boolean {
+  const lower = host.trim().toLowerCase()
+  return POST_ALLOWED_HOSTS.some((allowed) => lower === allowed || lower.endsWith(`.${allowed}`))
+}
+
+/**
+ * Build the OAuth POST transport.
+ *
+ * `deps.localProxy` is read on EVERY request rather than captured, so a getter
+ * (or a later edit of the object) is honoured: the proxy address is a live user
+ * setting, and pinning a stale snapshot here would send a credential exchange
+ * outside the tunnel the user asked for.
+ */
+export function createPostTransport(deps: { fetchImpl?: FetchLike; localProxy?: string } = {}): PostLike {
+  return async function post(request: PostRequest): Promise<PostResponse> {
+    let url: URL
+    try {
+      url = new URL(request.url)
+    } catch {
+      throw new TransportError('parse-failed', 'OAuth 端点地址无法解析，未发起请求。')
+    }
+    if (url.protocol !== 'https:') {
+      throw new TransportError('network', `OAuth 的 POST 只允许 https，收到 ${url.protocol}，已拒绝。`)
+    }
+    if (!isOfficialPostHost(url.hostname)) {
+      throw new TransportError(
+        'network',
+        `OAuth 的 POST 只允许官方主机（${POST_ALLOWED_HOSTS.join(' / ')}），收到 ${url.hostname}，已拒绝：带凭据的请求绝不经过镜像或第三方转发。`,
+      )
+    }
+
+    const timeoutMs = clampTimeoutMs(request.timeoutMs)
+    const signal = composeSignal([request.signal, timeoutSignal(timeoutMs)])
+    const headers: Record<string, string> = {
+      'content-type': 'application/x-www-form-urlencoded',
+      accept: 'application/json',
+      ...(request.headers ?? {}),
+    }
+    const body = new URLSearchParams({ ...request.form }).toString()
+
+    // The proxy address is part of the request (the flow knows it) and falls
+    // back to the deps-level default — see the note on laziness above.
+    const proxyText = (request.proxy ?? deps.localProxy ?? '').trim()
+    const proxy = parseProxyAddress(proxyText)
+    if (proxyText.length > 0 && proxy === undefined) {
+      // Same rule as the GET planner: a configured-but-unparseable proxy must
+      // never be silently bypassed — that would leak the exchange direct.
+      throw new TransportError(
+        'network',
+        '本机代理地址无法解析（形如 127.0.0.1:7890、http://host:port 或 socks5://host:port）。本次不发起请求，也不会绕过代理静默直连。',
+      )
+    }
+    if (proxy !== undefined) {
+      const support = proxySupport(proxy)
+      if (!support.supported) {
+        throw new TransportError('network', support.reason ?? '本机代理不受支持，未发起请求。')
+      }
+    }
+
+    if (proxy !== undefined) {
+      const plan = planRequest({
+        url: url.toString(),
+        headers,
+        transport: 'node',
+        localProxy: proxyText,
+        timeoutMs,
+      })
+      return postViaProxy(url, plan, proxy, signal, timeoutMs, body)
+    }
+
+    const impl = deps.fetchImpl ?? defaultFetch()
+    try {
+      const response = await impl(url.toString(), {
+        method: 'POST',
+        headers,
+        body,
+        // A credential exchange must not be re-issued to whatever a redirect
+        // points at; an OAuth endpoint that redirects is an error, not a hop.
+        redirect: 'error',
+        ...(signal === undefined ? {} : { signal }),
+      })
+      return { statusCode: response.status, body: await response.text() }
+    } catch (error) {
+      throw toTransportError(error, { reason: 'OAuth 表单 POST 失败。' })
+    }
+  }
+}
+
+/** POST over the hand-rolled tunnel. One hop, no redirect following. */
+async function postViaProxy(
+  url: URL,
+  plan: TransportPlan,
+  proxy: ProxySpec,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+  body: string,
+): Promise<PostResponse> {
+  if (plan.blocked) {
+    throw new TransportError('network', plan.reason ?? '本机配置阻止了本次请求。')
+  }
+  const answer = await proxyRequestOnce(url, plan, proxy, signal, timeoutMs, { method: 'POST', body })
+  return { statusCode: answer.statusCode, body: answer.body }
 }

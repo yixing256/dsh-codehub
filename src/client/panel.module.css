@@ -647,6 +647,281 @@
   letter-spacing: 0.01em;
 }
 
+/* --------------------------------------------------- connectivity rows -- */
+
+/*
+ * The connectivity panel is a GUI, not a payload dump: three fixed rows, each
+ * with a status badge and — only when the row failed — the reason on the NEXT
+ * line, directly under the row it belongs to. That adjacency is the whole point
+ * of the layout, so the reason is a grid child of its own rather than a tooltip.
+ */
+.connectList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.connectRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  padding: 8px;
+  min-width: 0;
+  background: var(--dsw-alias-bg-layer-1);
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 6px;
+}
+
+.connectHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.connectSource {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* Colour AND wording carry the status: a badge alone would fail for a user who
+ * cannot separate the two hues, which is why the text is never dropped. */
+.connectBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.connectBadgeIdle {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.connectBadgeRunning {
+  color: var(--dsw-alias-brand-primary);
+}
+
+.connectBadgeOk {
+  color: var(--dsw-alias-state-success-primary);
+}
+
+.connectBadgeFailed {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.connectMeta {
+  color: var(--dsw-alias-label-secondary);
+  font-family: var(--ds-font-family-code);
+  font-size: 11px;
+  word-break: break-word;
+}
+
+.connectReasonRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.connectReason {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 11.5px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.connectLogin {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+/* ------------------------------------------------------ saved summary -- */
+
+.summaryHeadline {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.summaryGrid {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.summaryRow {
+  display: grid;
+  grid-template-columns: minmax(88px, auto) minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 8px;
+  min-width: 0;
+  padding: 3px 0;
+  border-top: 1px solid var(--dsw-alias-border-l1);
+}
+
+.summaryLabel {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11.5px;
+}
+
+.summaryValue {
+  min-width: 0;
+  font-size: 11.5px;
+  word-break: break-word;
+}
+
+.summaryChanged {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  border: 1px solid var(--dsw-alias-brand-primary);
+  color: var(--dsw-alias-brand-primary);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+/* --------------------------------------------- decisions (folded down) -- */
+
+.decisionsHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.decisionsCount {
+  color: var(--dsw-alias-state-warn-primary);
+  font-weight: 400;
+}
+
+.decisionsBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+  min-width: 0;
+}
+
+.decisionsItem {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  min-width: 0;
+  background: var(--dsw-alias-bg-layer-1);
+  border: 1px dashed var(--dsw-alias-state-warn-primary);
+  border-radius: 6px;
+}
+
+.decisionsActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* Set briefly by the "decide now" button for GitHub access, so the user can
+ * see WHICH control the folded list was talking about. */
+.fieldHighlight {
+  border-radius: 8px;
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
+}
+
+/* ------------------------------------------------------ guide wizard -- */
+
+.guideSteps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.guideStep {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px;
+  min-width: 0;
+  background: var(--dsw-alias-bg-layer-1);
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 6px;
+}
+
+.guideStepTitle {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.guideStepDetail {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11.5px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+/* The device-flow user code: large enough to read off the screen and retype. */
+.guideCode {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  background: var(--dsw-alias-bg-overlay);
+  border: 1px solid var(--dsw-alias-brand-primary);
+  border-radius: 6px;
+}
+
+.guideCodeText {
+  font-family: var(--ds-font-family-code);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.guideWarning {
+  margin: 0;
+  padding: 8px;
+  color: var(--dsw-alias-state-warn-primary);
+  background: var(--dsw-alias-bg-layer-1);
+  border: 1px solid var(--dsw-alias-state-warn-primary);
+  border-radius: 6px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
 /* --------------------------------------------------------------- modals -- */
 
 .modalBody {
@@ -655,6 +930,166 @@
   gap: 10px;
   max-width: 520px;
   color: var(--dsw-alias-label-primary);
+}
+
+/*
+ * The wizard's scroll region.
+ *
+ * A single OAuth guide is four long steps plus a callback URL and two value
+ * fields — more than one window holds. The body therefore scrolls while the
+ * footer (and its close button) stays outside this box and always reachable.
+ * `min-height: 0` is what actually lets a flex child shrink enough to scroll.
+ */
+.guideScroll {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  max-height: min(62vh, 520px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+}
+
+/* ------------------------------------------------- credential guide families -- */
+
+.guideFamilies {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.guideFamily {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--dsw-alias-bg-layer-1);
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 6px;
+}
+
+.guideFamilyHead {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* A badge, not just bold text: the two families must be distinguishable at a
+   glance even when the reader is skimming. */
+.guideFamilyBadge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.guideFamilyBadgeOauth {
+  color: var(--dsw-alias-brand-primary);
+}
+
+.guideFamilyBadgeManual {
+  color: var(--dsw-alias-state-warn-primary);
+}
+
+.guideFamilyHint {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.guideFamilyEmpty {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.guideMethodRow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* One rule per class: the selected state is a modifier, not a second copy of the
+   whole declaration block (which is how the two drift apart). */
+.guideMethodBase {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  text-align: left;
+  font: inherit;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-1);
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.guideMethodBase:hover {
+  border-color: var(--dsw-alias-brand-primary);
+}
+
+.guideMethodActive {
+  border-color: var(--dsw-alias-brand-primary);
+  box-shadow: inset 2px 0 0 var(--dsw-alias-brand-primary);
+}
+
+.guideMethodBase:focus-visible,
+.guideMethodActive:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 2px;
+}
+
+.guideMethodTitle {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.guideMethodKind {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 999px;
+  font-size: 10.5px;
+  color: var(--dsw-alias-label-secondary);
+  white-space: nowrap;
+}
+
+/*
+ * The save bar sticks to the bottom of the form.
+ *
+ * It is the answer to "保存随时可见": at any scroll position the current save state
+ * ("已自动保存 · 3 项改动 · 12:01:02" / "有未保存的改动") and the manual save button
+ * stay on screen. `z-index` keeps it above the cards it overlaps while scrolling.
+ */
+.saveBarSticky {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  box-shadow: 0 -1px 0 var(--dsw-alias-border-l1);
+}
+
+/*
+ * The auto-save switch, inside the bar.
+ *
+ * It used to be an un-switchable "自动保存已开启" label, which is what left the
+ * manual button permanently disabled. An actual control belongs where the user
+ * looked for it.
+ */
+.saveBarToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--dsw-alias-label-secondary);
+  white-space: nowrap;
+  cursor: pointer;
 }
 
 .modalFooter {

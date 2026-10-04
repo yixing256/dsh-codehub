@@ -28,7 +28,15 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { SCHEMA_DEFAULTS } from '../src/config.js'
-import { UI_ENTRY_ID, UI_ENTRY_LABEL, UI_ENTRY_ORDER, UI_SETTINGS_ORDER } from '../src/contract.js'
+import {
+  CONNECTIVITY_ROW_ORDER,
+  SOURCES,
+  SOURCE_LABELS,
+  UI_ENTRY_ID,
+  UI_ENTRY_LABEL,
+  UI_ENTRY_ORDER,
+  UI_SETTINGS_ORDER,
+} from '../src/contract.js'
 import { en, zh } from '../src/client/locales.js'
 import { codeLinesContaining, readRepoFile, REPO_ROOT } from './helpers.js'
 
@@ -44,10 +52,15 @@ describe('默认两处都显示，且不再有首次询问', () => {
 
   it('first-run 选择器已经不存在了', () => {
     expect(existsSync(join(REPO_ROOT, 'src/client/first-run.tsx'))).toBe(false)
-    // No CODE line may reference the removed latch/dialog. Prose may: the header
-    // comments explain why it was removed, and `isCommentLine` excludes those.
-    expect(codeLinesContaining('first-run')).toEqual([])
+    // No CODE line may reference the removed latch or its dialog. Prose may: the
+    // header comments explain why it was removed, and `isCommentLine` excludes those.
+    //
+    // The match is on the removed IDENTIFIERS, not the bare words: `--no-first-run`
+    // is a Chromium flag the browser launcher passes, and a substring match on
+    // "first-run" would fail the build for a completely unrelated reason.
     expect(codeLinesContaining('dsh-codehub:first-run:v1')).toEqual([])
+    expect(codeLinesContaining('FirstRunDialog')).toEqual([])
+    expect(codeLinesContaining('first-run.tsx')).toEqual([])
   })
 
   it('locale 字典里不再有 firstRun / reopen 之类的一次性询问文案', () => {
@@ -151,6 +164,352 @@ describe('显示位置是插件设置里的一项，保存一次即生效', () =
     // The draft must not move the seats: that would make an unsaved radio click
     // rearrange the user's shell.
     expect(client).not.toMatch(/draft[^\n]*entryPlacement/)
+  })
+})
+
+describe('保存后第一眼回答「我配置了什么」', () => {
+  it('保存摘要排在同一个表单的最上方（原决策点位置）', () => {
+    const summaryAt = panel.indexOf('<SavedSummaryField')
+    const placementAt = panel.indexOf('<EntryPlacementField')
+    expect(summaryAt, 'CodeHubControls 必须渲染 SavedSummaryField').toBeGreaterThanOrEqual(0)
+    expect(placementAt).toBeGreaterThan(summaryAt)
+  })
+
+  it('摘要值一律取 host 回读值，草稿不参与', () => {
+    const start = panel.indexOf('function SavedSummaryField')
+    const block = panel.slice(start, panel.indexOf('function formatClock', start))
+    expect(start).toBeGreaterThanOrEqual(0)
+    expect(block).toMatch(/describeConfigSummary\(state\.config/)
+    expect(block, '摘要不得渲染草稿值').not.toMatch(/state\.draft/)
+  })
+
+  it('本次改动过的行标「本次修改」，没有改动时显示「没有改动需要保存」', () => {
+    const start = panel.indexOf('function SavedSummaryField')
+    const block = panel.slice(start, panel.indexOf('function formatClock', start))
+    expect(block).toMatch(/state\.lastChangedKeys/)
+    expect(block).toMatch(/summary\.modified/)
+    expect(block).toMatch(/summary\.noChanges/)
+    expect(block).toMatch(/summary\.hostValue/)
+    // The changed keys come from the patch the HOST accepted, not from a second
+    // diff taken after the read-back.
+    const api = readRepoFile('src/client/api.ts')
+    expect(api).toMatch(/summaryKeysForPatch\(patch\)/)
+    expect(api).toMatch(/lastChangedKeys/)
+  })
+
+  it('摘要覆盖用户要求的每一项', () => {
+    const api = readRepoFile('src/client/api.ts')
+    for (const key of [
+      'sourcePriority',
+      'githubAccessPriority',
+      'failoverEnabled',
+      'mergeSources',
+      'credentials',
+      'mirrors',
+      'localProxy',
+      'limits',
+      'deepReadTargets',
+      'entryPlacement',
+    ]) {
+      expect(api, `摘要缺少 ${key} 行`).toContain(`'${key}'`)
+    }
+  })
+})
+
+describe('保存条用结果词，决策点折叠并下沉到保存条上方', () => {
+  it('SaveBar 文案是「已保存 N 项改动 / 与 host 一致 / 有未保存的改动」', () => {
+    const start = panel.indexOf('function SaveBar')
+    const block = panel.slice(start, panel.indexOf('function CodeHubControls', start))
+    expect(start).toBeGreaterThanOrEqual(0)
+    expect(block).toMatch(/panel\.dirty/)
+    expect(block).toMatch(/summary\.changeCount/)
+    expect(block).toMatch(/panel\.clean/)
+    expect(block).toMatch(/panel\.revert/)
+  })
+
+  it('DecisionsField 在 SaveBar 之前，且不再是表单顶部那一项', () => {
+    const decisionsAt = panel.indexOf('<DecisionsField')
+    const saveAt = panel.indexOf('<SaveBar')
+    const placementAt = panel.indexOf('<EntryPlacementField')
+    expect(decisionsAt).toBeGreaterThanOrEqual(0)
+    expect(saveAt).toBeGreaterThan(decisionsAt)
+    expect(decisionsAt).toBeGreaterThan(placementAt)
+  })
+
+  it('折叠标题是「还差 N 项」，N=0 时给一行就绪 + 工具名', () => {
+    const start = panel.indexOf('function DecisionsField')
+    const block = panel.slice(start, panel.indexOf('function SavedSummaryField', start))
+    expect(start).toBeGreaterThanOrEqual(0)
+    expect(block).toMatch(/decisions\.remainingPrefix/)
+    expect(block).toMatch(/DECISION_KEYS\.length/)
+    expect(block).toMatch(/TOOL_NAME/)
+    expect(block).toMatch(/decisions\.readyHint/)
+    // 措辞：描述还差什么，不说教。
+    for (const value of Object.values(zh)) {
+      expect(value).not.toContain('你还没有')
+    }
+  })
+
+  it('每条决策点都有「现在就定」，可选未配项不进这个清单', () => {
+    const start = panel.indexOf('function DecisionsField')
+    const block = panel.slice(start, panel.indexOf('function SavedSummaryField', start))
+    expect(block).toMatch(/decisions\.decideNow/)
+    expect(block).toMatch(/source\.preset/)
+    expect(block).toMatch(/tristate\.on/)
+    expect(block).toMatch(/tristate\.off/)
+    expect(block).toMatch(/onLocateGithubAccess/)
+    // 可选项只在自己的控件旁显示「未配置」，不在未完成清单里。
+    expect(block).not.toMatch(/localProxy|webProxyBases|rawMirrorBases|credentials/)
+  })
+
+  it('可选未配项在各自控件旁内联显示「未配置」', () => {
+    // Mirrors: an action badge on the mirror card when both lists are empty.
+    expect(panel).toMatch(/common\.notConfigured/)
+    const mirrorAt = panel.indexOf("title={t('mirror.title')}")
+    expect(mirrorAt).toBeGreaterThanOrEqual(0)
+    expect(panel.slice(mirrorAt, mirrorAt + 400)).toMatch(/common\.notConfigured/)
+    // Local proxy: same treatment on the proxy card.
+    const proxyAt = panel.indexOf('title={LOCAL_PROXY_LABEL}')
+    expect(proxyAt).toBeGreaterThanOrEqual(0)
+    expect(panel.slice(proxyAt, proxyAt + 300)).toMatch(/common\.notConfigured/)
+    // Accounts already render 已配置 / 未配置 per source.
+    expect(panel).toMatch(/account\.notConfigured/)
+  })
+})
+
+describe('账号区：每源状态 + 四条路径 + 行内登录要求', () => {
+  it('浏览器登录 / 令牌或 Cookie 导入 / 获取向导 / 登出都在这里', () => {
+    const start = panel.indexOf('function AccountsField')
+    const block = panel.slice(start, panel.indexOf('function MirrorField', start))
+    expect(start).toBeGreaterThanOrEqual(0)
+    expect(block).toMatch(/account\.browserLogin/)
+    expect(block).toMatch(/account\.import/)
+    expect(block).toMatch(/account\.guide/)
+    expect(block).toMatch(/account\.logout/)
+    expect(block).toMatch(/openCredentialGuide/)
+    expect(block).toMatch(/openLoginDialog/)
+  })
+
+  it('登录要求来自契约常量，浏览器登录只给真有 OAuth 的源', () => {
+    const start = panel.indexOf('function AccountsField')
+    const block = panel.slice(start, panel.indexOf('function MirrorField', start))
+    expect(block).toMatch(/LOGIN_REQUIREMENTS\[row\.source\]/)
+    expect(block).toMatch(/SOURCE_LOGIN_METHODS\[row\.source\]/)
+    expect(block).toMatch(/oauth-device/)
+    expect(block).toMatch(/oauth-code/)
+  })
+})
+
+describe('连通性面板：恒定三行 GUI，不是 JSON 报文', () => {
+  const api = readRepoFile('src/client/api.ts')
+
+  it('三行与契约一致，行序来自 CONNECTIVITY_ROW_ORDER', () => {
+    expect([...CONNECTIVITY_ROW_ORDER]).toEqual([...SOURCES])
+    expect(api).toMatch(/CONNECTIVITY_ROW_ORDER\.map/)
+    expect(api).toMatch(/export function normalizeSmoke/)
+    // 空负载也要有三行 → 面板永远不变高变矮。
+    expect(api).toMatch(/export function emptyConnectivityRows/)
+  })
+
+  it('渲染源名 + 状态双通道 + 失败行下一行的原因', () => {
+    const start = panel.indexOf('function ConnectivityRows')
+    const block = panel.slice(start, panel.indexOf('function ConnectivityField', start))
+    expect(start).toBeGreaterThanOrEqual(0)
+    for (const source of CONNECTIVITY_ROW_ORDER) {
+      expect(SOURCE_LABELS[source].length, `${source} 必须有可渲染的源名`).toBeGreaterThan(0)
+    }
+    expect(block).toMatch(/SOURCE_LABELS\[row\.source\]/)
+    expect(block).toMatch(/CONNECT_STATUS_LABEL\[row\.status\]/)
+    expect(block).toMatch(/connectReasonRow/)
+    expect(block).toMatch(/LOGIN_REQUIREMENTS\[row\.source\]/)
+    expect(block).toMatch(/connectMeta/)
+  })
+
+  it('两个按钮走 /smoke 与 /probe(useStoredCredential)', () => {
+    const start = panel.indexOf('function ConnectivityField')
+    const block = panel.slice(start, panel.indexOf('function DecisionsField', start))
+    expect(block).toMatch(/connect\.runSmoke/)
+    expect(block).toMatch(/connect\.runProbe/)
+    expect(block).toMatch(/runSmoke\(\)/)
+    expect(block).toMatch(/runProbe\(\{ useStoredCredential: true \}\)/)
+  })
+
+  it('不挂 LearningBanner、不渲染 <pre>、/detect 仍是独立卡片', () => {
+    const start = panel.indexOf('function ConnectivityField')
+    const block = panel.slice(start, panel.indexOf('function DecisionsField', start))
+    expect(block).not.toMatch(/LearningBanner/)
+    expect(block).not.toContain('<pre')
+    expect(panel).not.toContain('JSON.stringify(smoke')
+    expect(panel).toMatch(/function DetectField/)
+    expect(panel).toMatch(/styles\.kvList/)
+  })
+
+  it('新增的 CSS 类都有规则（verify-artifacts 的廉价版本）', () => {
+    const css = readRepoFile('src/client/panel.module.css')
+    for (const name of [
+      'connectList',
+      'connectRow',
+      'connectBadgeIdle',
+      'connectBadgeRunning',
+      'connectBadgeOk',
+      'connectBadgeFailed',
+      'connectMeta',
+      'connectReasonRow',
+      'connectReason',
+      'connectLogin',
+      'summaryHeadline',
+      'summaryGrid',
+      'summaryRow',
+      'summaryLabel',
+      'summaryValue',
+      'summaryChanged',
+      'decisionsHead',
+      'decisionsCount',
+      'decisionsBody',
+      'decisionsItem',
+      'decisionsActions',
+      'fieldHighlight',
+      'guideSteps',
+      'guideStep',
+      'guideStepTitle',
+      'guideStepDetail',
+      'guideCode',
+      'guideCodeText',
+      'guideWarning',
+      // The wizard's scroll region and its two method families (user request:
+      // the guide did not fit one window, and OAuth had to be visibly distinct
+      // from token/cookie import).
+      'guideScroll',
+      'guideFamilies',
+      'guideFamily',
+      'guideFamilyHead',
+      'guideFamilyBadge',
+      'guideFamilyBadgeOauth',
+      'guideFamilyBadgeManual',
+      'guideFamilyHint',
+      'guideFamilyEmpty',
+      'guideMethodRow',
+      'guideMethodBase',
+      'guideMethodActive',
+      'guideMethodTitle',
+      'guideMethodKind',
+    ]) {
+      expect(css, `.${name} 必须有真实规则`).toMatch(new RegExp(`\\.${name}\\s*\\{`))
+    }
+  })
+})
+
+describe('向导是单独一个界面，且不含新依赖', () => {
+  const guide = readRepoFile('src/client/credential-guide.tsx')
+  const css = readRepoFile('src/client/panel.module.css')
+
+  it('按 loginGuideFor 渲染步骤，URL 可复制也可打开', () => {
+    expect(guide).toMatch(/loginGuideFor\(source, method\)/)
+    expect(guide).toMatch(/guide\.copyLink/)
+    expect(guide).toMatch(/guide\.open/)
+    expect(guide).toMatch(/window\.open/)
+  })
+
+  it('内容装不下一个窗口：正文在滚动区里，关闭按钮在滚动区之外', () => {
+    // The scroll container must exist and the footer must NOT be inside it, or
+    // the close button becomes unreachable on a long guide.
+    expect(guide).toMatch(/styles\.guideScroll/)
+    const scrollStart = guide.indexOf('styles.guideScroll')
+    const footerStart = guide.indexOf('styles.modalFooter')
+    expect(scrollStart).toBeGreaterThan(-1)
+    expect(footerStart).toBeGreaterThan(scrollStart)
+    // The scroll region is a real box with a bounded height in the stylesheet.
+    expect(css).toMatch(/\.guideScroll\s*\{[\s\S]*max-height/)
+    expect(css).toMatch(/\.guideScroll\s*\{[\s\S]*overflow-y:\s*auto/)
+  })
+
+  it('两种凭据获取方式分组展示，且 OAuth 与手动导入各有自己的标题与徽标', () => {
+    // Family membership is DATA (contract), not three `if`s in the view.
+    expect(guide).toMatch(/LOGIN_METHOD_FAMILIES/)
+    expect(guide).toMatch(/loginMethodsOf\(source, family\)/)
+    for (const key of ['guide.family.oauth', 'guide.family.oauthHint', 'guide.family.manual', 'guide.family.manualHint']) {
+      expect(guide).toContain(key)
+    }
+    // A source with no OAuth must SAY so instead of silently showing one family.
+    expect(guide).toMatch(/guide\.family\.noOauth/)
+    // Each option carries its kind (token vs cookie) so the two families cannot
+    // be confused by wording alone.
+    expect(guide).toMatch(/guide\.kind\.cookie/)
+    expect(guide).toMatch(/guide\.kind\.token/)
+    // Both group headings are their own visual elements, not one bold line.
+    expect(guide).toMatch(/guideFamilyBadgeOauth/)
+    expect(guide).toMatch(/guideFamilyBadgeManual/)
+  })
+
+  it('切换方式时不关窗，且切换会清掉上一个方式留下的值', () => {
+    expect(guide).toMatch(/const selectMethod = \(next: LoginMethodId\)/)
+    // The clearing effect is keyed on the method, so a switch wipes every field.
+    expect(guide).toMatch(/\[state\.open, source, method\]/)
+    expect(guide).toMatch(/setFields\(\{\}\)/)
+  })
+
+  it('window.open 在点击处理里同步调用（否则会被弹窗拦截）', () => {
+    expect(guide).toMatch(/onClick=\{\(\) => openUrl\(/)
+    // No await may precede the open call inside the handler.
+    expect(guide).not.toMatch(/await[^\n]*window\.open/)
+  })
+
+  it('回调地址用契约常量拼，不手写路径', () => {
+    expect(guide).toMatch(/\$\{OAUTH_CALLBACK_PATH\}/)
+    expect(guide).not.toContain("'/api/dsh-codehub/oauth/callback'")
+  })
+
+  it('CDP 路径必须先勾选「我已了解风险」，结果只给名称与数量', () => {
+    expect(guide).toMatch(/guide\.cdpConsent/)
+    expect(guide).toMatch(/disabled=\{busy !== null \|\| !consent\}/)
+    expect(guide).toMatch(/guide\.cdpNames/)
+    expect(guide).toMatch(/guide\.cdpCount/)
+    // 只有 whitelist 出来的字段被渲染，值不可能出现。
+    expect(guide).not.toMatch(/cookieHeader/)
+  })
+
+  it('登录对话框仍是向导入口，且保留手动粘贴兜底', () => {
+    const dialog = readRepoFile('src/client/login-dialog.tsx')
+    expect(dialog).toMatch(/openCredentialGuide/)
+    expect(dialog).toMatch(/CredentialGuide/)
+    expect(dialog).toMatch(/saveCredential\(source, kind, draftValue\)/)
+    // 值只在输入框与请求体各存在一次；提交后立即清空。
+    expect(dialog).toMatch(/setValue\(''\)/)
+    // No storage API is ever touched (the values contract is about USE, so the
+    // prose that names localStorage is deliberately not what is matched here).
+    expect(dialog).not.toMatch(/(window\.)?(local|session)Storage\s*[.[]/)
+    expect(guide).not.toMatch(/(window\.)?(local|session)Storage\s*[.[]/)
+  })
+
+  it('CDP 开关就在向导里：关着时明说要先打开，并且能一键打开并立即保存', () => {
+    // 用户要求：「要么放到向导里，要么向导里有明显提示要到主界面打开 CDP 才能使用」。
+    expect(guide).toContain('guide.cdpDisabledNotice')
+    expect(guide).toContain('guide.cdpEnable')
+    expect(guide).toContain('guide.cdpEnableHint')
+    // 打开后要说明去哪儿关，避免开关变成单向门。
+    expect(guide).toContain('guide.cdpEnabled')
+    // 未启用时「读取」按钮就是禁用的（不能点了之后才慢慢失败）。
+    expect(guide).toMatch(/!configState\.config\.csdnCdpEnabled/)
+    // 一键启用必须「立即保存」：只排期自动保存的话 host 还没拿到标记，下一次点击必然 403。
+    expect(guide).toMatch(/await autoSaveNow\(\)/)
+    expect(guide).toMatch(/csdnCdpEnabled: true/)
+    // 保存失败时有明确去向，而不是静默。
+    expect(guide).toContain('guide.cdpEnableFailed')
+  })
+
+  it('「启动调试浏览器」属于 CDP 抓取那一步，不另起编号步骤', () => {
+    // The whole CDP path lives in one pane: 启用 → 启动 → 在那个窗口登录 → 同意 → 读取。
+    expect(guide).toContain('launchDebugBrowser')
+    expect(guide).toContain('csdn.cdp.launch')
+    // 没有「③ …（就在这一步完成，不用回主界面）」这种编号标题与解说腔。
+    expect(guide).not.toContain('guide.cdpStepLaunch')
+    expect(readRepoFile('src/client/locales.ts')).not.toContain('不用回主界面')
+    // 未启用时按钮禁用并说明原因（不能点了才发现 host 拒绝）。
+    expect(guide).toContain('guide.cdpLaunchNeedsEnable')
+    // 启动时把登录页一起打开：独立配置目录一开始是未登录的。
+    expect(guide).toContain('LOGIN_URLS.csdnLogin')
+    // 启动结果就地显示（含「请在那个窗口登录 CSDN」的下一步）。
+    expect(guide).toContain('launchNote')
   })
 })
 

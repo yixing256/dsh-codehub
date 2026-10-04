@@ -60,7 +60,6 @@ const contractValues = {
   localProxyNote: '仅 Node 直连传输生效',
   csdnProbedAt: '2026-10-03',
 }
-
 // ---- 1. host plugin surface ----------------------------------------------
 want('host exports the plugin name', host, 'dsh-codehub')
 want('host declares the learn_code_from_web tool', host, 'learn_code_from_web')
@@ -85,6 +84,27 @@ want('备注② CSDN probe date survives bundling', host, contractValues.csdnPro
 want('备注② CSDN non-official wording survives bundling', host, '非官方内部接口')
 want('备注① phrase documented in README', readme, contractValues.localProxyNote)
 want('备注② probe date documented in README', readme, contractValues.csdnProbedAt)
+
+// ---- 4b. login requirement facts survive bundling --------------------------
+//
+// These four sentences are what the UI, the tool failure reasons and the README
+// all state about "does querying code need a login?". They are derived from
+// contract constants; this checks the BUILT bundles actually carry them (and
+// that tree-shaking did not quietly drop a constant that only tests import),
+// plus the two coarser facts a reader must be able to find.
+want('login requirement probe date survives bundling', host, '2026-10-04')
+want('GitHub anonymous code search evidence survives', host, 'Requires authentication')
+want('Gitee missing code-search endpoint evidence survives', host, 'HTTP 404')
+want('CSDN anti-bot evidence survives', host, 'HTTP 521')
+want('CSDN robots disclosure is shipped', host, 'robots.txt')
+want('CSDN robots disclosure is documented in README', readme, 'Disallow: /')
+want(
+  'README states code search needs a token (GitHub)',
+  readme,
+  'search/code',
+)
+want('README documents the GitHub device flow', readme, 'Device Flow')
+want('README documents the callback registration (Gitee)', readme, '回调地址')
 
 // ---- 5. client bundle is the loader artifact ------------------------------
 want('client is wrapped for the DSH module loader', client, 'window.__ModuleLoader__.load(')

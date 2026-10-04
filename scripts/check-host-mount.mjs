@@ -26,12 +26,31 @@
  */
 
 import { assertObjectJsonSchema, assertSupportedJsonSchema } from '@deepseek-ai/dsh-tools'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const notes = []
 const failures = []
 const ok = (label) => notes.push(`  ok   ${label}`)
 const fail = (label) => failures.push(label)
 const check = (condition, label) => (condition ? ok(label) : fail(label))
+
+/**
+ * ISOLATE `$DSH_HOME` BEFORE LOADING THE PLUGIN — this check must be hermetic.
+ *
+ * `service.resolve()` merges `$DSH_HOME/dsh-codehub.json` (the fallback snapshot
+ * kept for runtimes whose settings namespace is read-only) on top of the config
+ * it is handed. On a machine that has really used the plugin, that file carries
+ * ANSWERED decisions, so mounting with `{}` no longer means "four decisions
+ * unset" — the gate legitimately opens and the refusal assertion below fails.
+ *
+ * That is a property of the reader's machine, not of the code, so the check pins
+ * `DSH_HOME` at an empty temp directory. `resolveDshHome()` reads the env var per
+ * call, which is exactly why this works after import — but the env must be set
+ * before the bundle is imported so no cached path can win.
+ */
+process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-codehub-store-check-'))
 
 // ---------------------------------------------------------------------------
 // Mount the built host bundle on a minimal context

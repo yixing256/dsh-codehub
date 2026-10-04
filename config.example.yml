@@ -54,6 +54,33 @@ github:
   # 作用范围：仅 Node 直连传输生效（走 DSH 自带 web 通道时由 Harness 出网，插件无法注入代理）。
   localProxy: ''
 
+  # GitHub 浏览器登录（设备码流程）用的 Client ID。
+  # 在 https://github.com/settings/applications/new 建一个属于你的 OAuth App，
+  # 并在该 App 的设置里勾选 Enable Device Flow（不勾会以 device_flow_disabled 失败）。
+  # 设备码流程不需要 client_secret，所以这里没有 secret 字段 —— 这是刻意的。
+  # 留空 = 该登录方式不可用（不是错误；仍可用令牌粘贴）。
+  oauthClientId: ''
+
+gitee:
+  # Gitee 浏览器登录（授权码流程）用的 Client ID / Client Secret。
+  # Gitee 不支持 PKCE、也不支持设备码，因此 client_secret 是必需的；它**不在这里**，
+  # 只存 DSH 凭据服务（见 .env.example 的 DSH_CODEHUB_GITEE_OAUTH_CLIENT_SECRET）。
+  oauthClientId: ''
+  # 必须与 Gitee 应用里登记的「应用回调地址」完全一致。
+  # 界面里的「复制回调地址」给的就是这一串（形如 http://127.0.0.1:19387/api/dsh-codehub/oauth/callback）。
+  # 留空 = 用当前面板地址自动推导；端口变了就要回 Gitee 重新登记。
+  oauthRedirectUri: ''
+
+csdn:
+  # 搜索命中但没有代码时，是否补抓一次文章页抽代码（受 limits.maxDepth 约束：默认 1 = 最多抓一篇）。
+  # 实测：搜索接口 30 条里只有约 6 条带正文，而文章页匿名可取到代码。
+  articleFetch: true
+  # 实验性：从本机浏览器调试端口读取 csdn.net 的 cookie（含 HttpOnly）。
+  # 需要你先以 --remote-debugging-port 启动浏览器；开启后本机会多出一个本地进程可访问的
+  # 调试端口，默认关闭，且界面上还要再勾一次同意才会执行。
+  cdpEnabled: false
+  cdpPort: 9222
+
 failover:
   # 某个源失败时是否自动降级到下一个源。留空 = 未决定。
   enabled: null
