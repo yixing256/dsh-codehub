@@ -21,28 +21,6 @@
 
 ### 防搬运是机制，不是叮嘱
 
-`CodeLearnResult.is_verbatim_copy` 的类型是**字面量 `false`**（不是 `boolean`）：
-
-```ts
-readonly is_verbatim_copy: false
-```
-
-没有任何可赋给该字段的值能表示「这是一份允许的直接复制」，所以**不存在构造出 `true` 的代码
-路径**。配套：`code` 经统一出口截断（默认 4000 字符）、渲染时强制打「仅学习参考 · 不得直接
-粘贴进用户项目」横幅、深读产出的是结构化**思路笔记**而非文件副本。
-
-同一段防搬运声明**同时**写进 agent tool 的 description 和系统提示词段，两处引用
-`src/contract.ts` 里同一个 `ANTI_COPY_STATEMENT` 常量 —— 不是两份内容相同的副本。
-
----
-
-## 切勿提交 `.env` / local 配置
-
-- `.env`、`.env.*`、`*.local.yml`、`*.local.json`、`*.token`、`*.key`、`*.pem`、
-  `credentials.json`、`secrets.*` **一律不入库**（`.gitignore` 已冻结这些条目）。
-- 仓库里只允许存在**模板**：`.env.example`（值全空）、`config.example.yml`（占位值）。
-- 任何真实 token / cookie / 代理凭据只能通过 DSH 凭证服务或本机环境变量提供。
-- 提交前自查：`git status --porcelain` 里不应出现 `.env`、`*.local.yml`、`*.token`。
 
 **token 存放位置（三重策略）**
 
@@ -197,60 +175,6 @@ loader 真正实例化时才执行 —— 这也意味着 `require(...)` 调用�
 
 ---
 
-## 已验证事实
-
-本机（Windows + Node v24.19.0）实测结论，写死在此以免后人重复踩坑。
-
-### 最重要的一条：这台机器上 `node` 直连通道**完全没有出网能力**
-
-用 `scripts/smoke.ts`（`pnpm run smoke`）打真实端点，**三个源全部失败**：
-
-```
-[github] ok=false results=0 failure=network   — 网络请求失败：fetch failed
-[gitee]  ok=false results=0 failure=network   — 网络请求失败：fetch failed
-[csdn]   ok=false results=0 failure=network   — 网络请求失败：fetch failed
-```
-
-而**同一台机器上** Harness 自己的 `web_fetch`（即 `dsh-web` 通道）能拿到
-`api.github.com` 返回 HTTP 200。结论：
-
-> **`dsh-web` 是本机唯一可用的出网通道。** 插件默认优先 `dsh-web`、失败才回落 `node`
-> 的设计因此不是偏好问题，而是**本机的硬约束**。
-
-这直接解释了「本机代理」为什么不重要：代理设置只作用于 `node` 通道，而 `node` 通道在这
-台机器上根本不出去。反过来说，**如果你在别的机器上 `node` 通道可用，代理设置才有意义**。
-
-### 端点可达性
-
-| 目标 | 经 `dsh-web` 通道 | 经 `node` 直连 |
-| --- | --- | --- |
-| `api.github.com` | **可达**（HTTP 200） | 不可达 |
-| `raw.githubusercontent.com` | 曾被观测到 HTTP 200 | 不可达 |
-| `ghproxy.net`（镜像） | **可用** | 不可达 |
-| 任意公网地址 | 可达 | `fetch failed` |
-
-### 接口形态（与可达性无关，是服务端行为）
-
-| 端点 | 实测结果 |
-| --- | --- |
-| `gitee.com/api/v5/projects?q=...` | 返回 **404** —— 该接口不存在，禁止为它编造响应字段 |
-| `gitee.com/api/v5/search/repositories?q=...` | HTTP 200，但**匿名返回空数组**（需 token） |
-| `so.csdn.net/api/v3/search?...` | HTTP 200，`result_vos[]` 有真实数据 |
-
-> Gitee 的搜索接口是 `/search/repositories` 与 `/search/code`（需 `access_token`）。
-> 网上常见资料里写的 `/api/v5/projects?q=...` 实测为 **404**，本插件不使用它。
-
-### 怎么复核这些结论
-
-```bash
-pnpm run smoke
-```
-
-该脚本**刻意不进 `pnpm test`**：它依赖网络、会被限流、并打一个非公开 API。它输出的是
-**读数而非断言** —— 失败可能意味着端点搬了、机器离线或没配凭据，这些都是有用的事实而不是
-构建坏了。
-
----
 
 ## 决策点：插件永不替你拍板
 
@@ -315,31 +239,6 @@ test/                    vitest
 `@deepseek-ai/*` 官方 SDK 在本机**不在磁盘上**（打包在 DSH 的运行体内、不可作为目录读取），
 所以没有上游 `.d.ts` 可 import。该文件是**按实测运行时形状手写的契约垫片**，tsconfig 已把它
 include 进程序。DSH 升级后需要按实测复核。
-
-### 约定
-
-- 契约常量集中在 `src/contract.ts`，其它模块**只引用不重写**。
-- 模块间的相对 import 一律用 **`.js` 说明符**（`./x.js`）—— NodeNext 正确，且能安全穿过声明
-  产物；`tsdown` 会在打包时解析回 `.ts`。
-- `lib/` 与 `node_modules/` 是开发期产物，不入库。
-
----
-
-## 已知限制
-
-- **`node` 直连通道在本机完全没有出网能力** —— 三个源的实测冒烟全部 `fetch failed`；插件因此
-  实际只能走 `dsh-web` 通道。详见「已验证事实」。
-- **本机代理不作用于 `dsh-web` 通道**，而本机也只有 `dsh-web` 可用 —— 所以代理设置在这台机器
-  上是空转的；见「本机代理」一节。
-- **`raw.githubusercontent.com` 在本机不稳定/不可直连** —— 建议配 raw 镜像基址。
-- **Gitee 搜索端点未登录时返回空数组** —— 不算失败，但需要你提供 token 才有结果。
-- **`lib/client.css` 目前不会自动注入页面**。DSH 客户端模块加载器能否解析 CSS 说明符无法在
-  本机验证，而猜错的代价是**整个插件加载失败**（比「没样式」严重得多），所以样式表作为独立
-  构建产物发布，待对照真实 GUI 确认后再接线。面板与设置页是语义 HTML + 渐进增强，
-  样式未加载时全部控件仍可用可读。
-- **浏览器半边未经真实 GUI 验证**。host 半边有 typecheck、构建、242 个单测与真实端点冒烟
-  背书；client 半边只有 typecheck + 构建 + 源码级断言（CSS 注入、槽位注册、`settingsScope`
-  可用性三处无法在无 GUI 的环境下确认）。
 
 ## 许可
 
