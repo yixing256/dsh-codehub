@@ -1,9 +1,10 @@
 /*
  * dsh-codehub — browser-half styles.
  *
- * One stylesheet for every seat (sidebar panel, settings section, first-run
- * chooser, login dialog). CSS Modules scope the class names; the JS side gets
- * the class map from the `@tsdown/css` pipeline configured in tsdown.config.ts.
+ * One stylesheet for every seat (sidebar panel, the sidebar rail glyph, the
+ * settings section, the login dialog). CSS Modules scope the class names; the JS
+ * side gets the class map from the `@tsdown/css` pipeline configured in
+ * tsdown.config.ts.
  *
  * RULES OBSERVED HERE
  * -------------------
@@ -546,6 +547,106 @@
   word-break: break-all;
 }
 
+/* --------------------------------------------------- placement options -- */
+
+/*
+ * The "显示位置 / Where it appears" control, shared by the settings section and
+ * the sidebar panel.
+ *
+ * Deliberately NOT a row of inline radios: every choice is its own full-width
+ * row with the title on one line and the explanation on the NEXT line, and the
+ * rows are separated by a real gap. That is the fix for the old chooser, whose
+ * title and description sat in one cramped cluster.
+ */
+
+.optionList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.optionRow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  column-gap: 10px;
+  min-width: 0;
+  padding: 10px 12px;
+  background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.optionRow:hover {
+  border-color: var(--dsw-alias-border-l2);
+}
+
+.optionRowSelected {
+  border-color: var(--dsw-alias-brand-primary);
+}
+
+.optionInput {
+  margin: 2px 0 0;
+  flex: 0 0 auto;
+}
+
+.optionText {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.optionTitle {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.optionDesc {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+/* The row under the options: status on the left, the one Save button right. */
+.optionSaveRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* ------------------------------------------- the GitHub cat mark + word -- */
+
+/*
+ * The plugin names itself the same way in everything it draws: the GitHub cat
+ * glyph followed by the word `codehub`. The sidebar rail row is drawn by the
+ * shell from `CodeHubPanelGlyph` (glyph only); these two classes cover the
+ * header inside the panel and the settings section.
+ */
+.entryMark {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--dsw-alias-label-primary);
+}
+
+.entryMarkText {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
 /* --------------------------------------------------------------- modals -- */
 
 .modalBody {
@@ -554,40 +655,6 @@
   gap: 10px;
   max-width: 520px;
   color: var(--dsw-alias-label-primary);
-}
-
-.modalOption {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 8px 10px;
-  background: var(--dsw-alias-bg-layer-2);
-  border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 8px;
-  cursor: pointer;
-  min-width: 0;
-}
-
-.modalOptionSelected {
-  border-color: var(--dsw-alias-brand-primary);
-}
-
-.modalOptionBody {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.modalOptionTitle {
-  font-size: 12.5px;
-  font-weight: 600;
-}
-
-.modalOptionDesc {
-  color: var(--dsw-alias-label-secondary);
-  font-size: 11.5px;
-  word-break: break-word;
 }
 
 .modalFooter {

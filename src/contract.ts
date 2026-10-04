@@ -42,11 +42,44 @@ export const LOCALE_NAMESPACE = 'dsh-codehub'
 /** Host plugin context this plugin requires before any surface mounts. */
 export const inject = ['tools', 'webServer', 'systemPrompt'] as const
 
-/** Slot used by the first-run chooser and the login dialogs. */
+/** Slot used by the login dialogs. */
 export const OVERLAY_SLOT = 'shell.overlay'
 
 /** Ordered position of our system-prompt section (the tool-guidance band). */
 export const PROMPT_SECTION_ORDER = 150
+
+// ---------------------------------------------------------------------------
+// Browser-half seat identity.
+//
+// One id, one label, one order — shared by the sidebar row, the `main` key and
+// the settings section, so the three seats cannot drift apart, and imported by
+// the tests that assert they agree.
+// ---------------------------------------------------------------------------
+
+/**
+ * The seat id: the `sidebar.panellist` row id, the `main` slot key and the
+ * `settings.section` id are all this one value.
+ */
+export const UI_ENTRY_ID = 'codehub'
+
+/**
+ * The sidebar row's visible text. The shell owns the row chrome (button,
+ * tooltip, rail geometry) and renders this label next to the glyph we draw, so
+ * the user sees the GitHub cat mark followed by exactly this word.
+ */
+export const UI_ENTRY_LABEL = 'codehub'
+
+/**
+ * The sidebar row's position. The rail sorts ascending, so a SMALL number puts
+ * the row near the top — which is where the user asked for it.
+ */
+export const UI_ENTRY_ORDER = 5
+
+/** Order of the settings section in the settings page. */
+export const UI_SETTINGS_ORDER = 30
+
+/** Order of the login overlay above other overlays. */
+export const UI_OVERLAY_ORDER = 20
 
 /** Loopback-fenced route family served by the host half. */
 export const API_PREFIX = '/api/dsh-codehub'

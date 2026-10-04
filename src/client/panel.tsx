@@ -36,17 +36,21 @@ import {
   SOURCES,
   SOURCE_LABELS,
   TOKEN_FORBIDDEN_ACCESS,
+  UI_ENTRY_LABEL,
 } from '../contract.js'
 import type { AccessRisk, DeepReadTarget, GithubAccessId, SourceId } from '../contract.js'
-import {
-  IconChevronDownOutline14,
-  IconCloseOutline16,
-  IconPlusOutline16,
-  IconRefreshOutline16,
-  Input,
-  Modal,
-} from '@deepseek-ai/dsh-client-ui-primitives'
-import type { IconProps, InputProps, ModalProps } from '@deepseek-ai/dsh-client-ui-primitives'
+/*
+ * ONLY the two primitives that still exist on the live runtime are imported here.
+ *
+ * The icons deliberately are NOT: `Icon*Outline16` / `Icon*Outline14` were renamed
+ * to `Icon*OutlineMedium` / `Icon*OutlineRegular` on DSH 0.2.0-rc.2, so importing
+ * them yielded `undefined` and rendering them threw — blanking this whole panel
+ * AND the settings section, while the sidebar glyph (which used no SDK icon)
+ * kept working. See `./icon.tsx` for the inline glyphs and
+ * `scripts/check-sdk-surface.mjs` for the gate that now catches a rename.
+ */
+import { Input, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { InputProps, ModalProps } from '@deepseek-ai/dsh-client-ui-primitives'
 import { useEffect, useId, useState } from 'react'
 import type { ComponentType, ReactElement, ReactNode } from 'react'
 
@@ -68,23 +72,40 @@ import {
   useSettingsScopeStatus,
 } from './api.js'
 import type { CodeHubConfigView, CodeHubLimits, CredentialSource, EntryPlacement } from './api.js'
-import { openFirstRunChooser } from './first-run.js'
+import { GitHubCatGlyph, IconChevronDown, IconClose, IconPlus, IconRefresh } from './icon.js'
 import { openLoginDialog } from './login-dialog.js'
 import { useTranslate } from './locales.js'
 import type { LocaleKey, Translate } from './locales.js'
 import styles from './panel.module.css'
 
 /**
- * Typing bridge for the primitives: the SDK shim declares them as returning
- * `ReactNode`, React's JSX contract wants an element type. The runtime
+ * Typing bridge for the two remaining primitives: the SDK shim declares them as
+ * returning `ReactNode`, React's JSX contract wants an element type. The runtime
  * components are used unchanged.
+ *
+ * `Input` is resolved defensively: if a future runtime renames it, the field
+ * degrades to a plain native `<input>` instead of an undefined component, which
+ * would otherwise blank every control on both surfaces.
  */
-export const UIInput = Input as unknown as ComponentType<InputProps>
+export const UIInput = (typeof Input === 'function' ? Input : NativeInput) as unknown as ComponentType<InputProps>
 export const UIModal = Modal as unknown as ComponentType<ModalProps>
-export const IconPlus = IconPlusOutline16 as unknown as ComponentType<IconProps>
-export const IconClose = IconCloseOutline16 as unknown as ComponentType<IconProps>
-export const IconRefresh = IconRefreshOutline16 as unknown as ComponentType<IconProps>
-export const IconChevronDown = IconChevronDownOutline14 as unknown as ComponentType<IconProps>
+
+/** Minimal native stand-in for the SDK `Input`, used only if the SDK loses it. */
+function NativeInput(props: InputProps): ReactElement {
+  return (
+    <input
+      type={props.type ?? 'text'}
+      value={props.value}
+      placeholder={props.placeholder}
+      disabled={props.disabled}
+      aria-label={props['aria-label']}
+      onChange={props.onChange}
+    />
+  )
+}
+
+/** The glyphs are re-exported so the settings card and dialogs share one source. */
+export { IconChevronDown, IconClose, IconPlus, IconRefresh }
 
 /** Props every seat of this plugin accepts. */
 export interface SeatProps {
@@ -114,6 +135,20 @@ const PLACEMENT_LABEL: Record<EntryPlacement, LocaleKey> = {
   settings: 'entry.settings',
   both: 'entry.both',
 }
+
+const PLACEMENT_DESC: Record<EntryPlacement, LocaleKey> = {
+  sidebar: 'entry.sidebarDesc',
+  settings: 'entry.settingsDesc',
+  both: 'entry.bothDesc',
+}
+
+/**
+ * The three placements as the control lists them.
+ *
+ * `both` first because it IS the default (`SCHEMA_DEFAULTS.entryPlacement`), so
+ * the pre-selected choice is also the first one read.
+ */
+const PLACEMENTS: readonly EntryPlacement[] = ['both', 'sidebar', 'settings']
 
 const DEEP_READ_LABEL: Record<DeepReadTarget, LocaleKey> = {
   readme: 'deepread.readme',
@@ -709,15 +744,64 @@ function DecisionsField({ t }: { t: Translate }): ReactElement {
 
 function EntryPlacementField({ t }: { t: Translate }): ReactElement {
   const state = useConfigState()
-  const placement = (state.draft ?? state.config).entryPlacement
+  const draft = (state.draft ?? state.config).entryPlacement
+  const saved = state.config.entryPlacement
+  const pending = draft !== saved
+  const [saving, setSaving] = useState(false)
+
+  const save = async (): Promise<void> => {
+    setSaving(true)
+    try {
+      // The same save path as the bar at the bottom of the form: the host
+      // accepts the patch, the config store adopts it, and index.ts (which
+      // subscribes to that store) re-registers the seats. Nothing here reaches
+      // into the slot registry directly.
+      await saveDraft()
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
-    <SectionCard title={t('entry.title')} hint={t('entry.switchNote')}>
-      <div className={styles.rowBetween}>
-        <span>
-          {t('entry.current')}: <strong>{t(PLACEMENT_LABEL[placement])}</strong>
+    <SectionCard title={t('entry.title')} hint={t('entry.hint')}>
+      <div className={styles.optionList} role="radiogroup" aria-label={t('entry.title')}>
+        {PLACEMENTS.map(placement => {
+          const selected = draft === placement
+          return (
+            <label
+              key={placement}
+              className={`${styles.optionRow} ${selected ? styles.optionRowSelected : ''}`}
+            >
+              <input
+                type="radio"
+                className={styles.optionInput}
+                name="dsh-codehub-placement"
+                value={placement}
+                checked={selected}
+                onChange={() => updateDraft(next => ({ ...next, entryPlacement: placement }))}
+              />
+              <span className={styles.optionText}>
+                <span className={styles.optionTitle}>{t(PLACEMENT_LABEL[placement])}</span>
+                <span className={styles.optionDesc}>{t(PLACEMENT_DESC[placement])}</span>
+              </span>
+            </label>
+          )
+        })}
+      </div>
+
+      <div className={styles.optionSaveRow}>
+        <span className={pending ? styles.statusWarn : styles.muted}>
+          {pending ? t('entry.unsaved') : `${t('entry.current')}：${t(PLACEMENT_LABEL[saved])} · ${t('entry.inSync')}`}
         </span>
-        <button type="button" className={styles.button} onClick={() => openFirstRunChooser(placement)}>
-          {t('entry.reopen')}
+        <button
+          type="button"
+          className={styles.buttonPrimary}
+          disabled={!pending || saving}
+          onClick={() => {
+            void save()
+          }}
+        >
+          {saving ? t('entry.saving') : t('entry.save')}
         </button>
       </div>
     </SectionCard>
@@ -801,6 +885,11 @@ export function CodeHubControls({ t, variant }: { t: Translate; variant: 'panel'
   return (
     <div className={variant === 'settings' ? styles.formGrid : styles.stack}>
       {variant === 'settings' ? <SettingsScopeRow t={t} /> : null}
+
+      {/* 0. Where the plugin appears. FIRST, not last: it is the one control a
+          user arrives looking for, and it is an ordinary saved setting — both
+          surfaces are on by default, so nothing asks on startup. */}
+      <EntryPlacementField t={t} />
 
       <DecisionsField t={t} />
 
@@ -920,8 +1009,7 @@ export function CodeHubControls({ t, variant }: { t: Translate; variant: 'panel'
         </div>
       </SectionCard>
 
-      {/* 12. Reopen the entry-placement chooser */}
-      <EntryPlacementField t={t} />
+      {/* 12. (entry placement moved to the top of this list — see step 0) */}
 
       <ProbeField t={t} />
       <SaveBar t={t} />
@@ -951,7 +1039,12 @@ export function CodeHubPanel(props: SeatProps): ReactElement {
   return (
     <div className={styles.root}>
       <header className={styles.header}>
-        <h2 className={styles.title}>{t('panel.title')}</h2>
+        {/* The GitHub cat mark followed by the plugin's word — the same pair the
+            sidebar rail row shows, drawn from the same glyph component. */}
+        <span className={styles.entryMark}>
+          <GitHubCatGlyph size={18} />
+          <span className={styles.entryMarkText}>{UI_ENTRY_LABEL}</span>
+        </span>
         <p className={styles.subtitle}>{t('panel.subtitle')}</p>
       </header>
 

@@ -77,7 +77,8 @@ readonly is_verbatim_copy: false
 
 - **service** `ctx.codeSource` —— 供其他插件调用
 - **agent tool** `learn_code_from_web` —— 供 agent 主动查询
-- **侧边栏面板 / 设置页** —— 首次启用时弹一次性选择，决定面板放哪
+- **侧边栏入口 + 设置页** —— 默认两处都显示：侧边栏顶部是 GitHub 猫标 + `codehub`，
+  点开是完整面板；设置页里是同一份表单。放哪由插件设置里的「显示位置」控制，保存一次即生效。
 
 ### 开发
 
@@ -85,8 +86,9 @@ readonly is_verbatim_copy: false
 pnpm install
 pnpm run typecheck   # tsc --noEmit，严格模式，是正确性的权威门禁
 pnpm run build       # tsc 声明产物 + tsdown 双入口 + scripts/wrap-client.mjs
-pnpm test            # vitest —— 247 例
-pnpm run verify      # 对构建产物做交付验收（需先 build）
+pnpm test            # vitest —— 291 例
+pnpm run verify      # 交付验收：先查真实运行时的 SDK 表面，再查产物与两端座位
+pnpm run verify:sdk  # 单独查：src/ 里每个「值」导入在真机运行时是否真的存在
 pnpm run boot-check  # 真实启动一个 profile，确认插件真的挂上（见下）
 pnpm run smoke       # 真实端点连通性读数（需网络，刻意不进 test）
 ```
@@ -95,16 +97,28 @@ pnpm run smoke       # 真实端点连通性读数（需网络，刻意不进 te
 
 | 命令 | 回答的问题 | 会漏掉什么 |
 |---|---|---|
-| `typecheck` | 类型对不对 | 运行期行为 |
-| `test` | 行为对不对（247 例，**零网络**） | **类型错误**（vitest 只转译不做类型检查） |
-| `verify` | **产物**里该有的东西在不在 | 逻辑正确性 |
+| `typecheck` | 类型对不对 | 运行期行为；**手写的 SDK shim 写错时它也会跟着错** |
+| `test` | 行为对不对（291 例，**零网络**） | **类型错误**（vitest 只转译不做类型检查） |
+| `verify:sdk` | 导入的 SDK 名字在**真机运行时**存不存在 | 语义（名字在但行为变了） |
+| `verify` | **产物**里该有的东西在不在、两端座位能不能注册并渲染 | 逻辑正确性 |
 | `boot-check` | 插件在**真实加载器**里能不能挂上 | 无断言，只给读数 |
 | `smoke` | 真端点通不通 | 无断言，只给读数 |
 
-> **为什么必须有 `boot-check`**：本插件曾在 `typecheck` / `build` / `test` **全绿**的情况下
-> 于真机上完全不可用 —— `learn_code_from_web` 的 `output.schema` 用了语法糖
-> `required: true`，而运行时的 schema 校验器**拒绝**该写法并**中止整个工具注册**。
-> 单测全部注入假 transport、从不经过真实加载器，所以完全看不到。
+> **为什么必须有 `verify:sdk`**：本插件曾在 `typecheck` / `build` / `test` **全绿**的情况下
+> 于真机上「点开什么都没有」—— 浏览器半边按 0.1.5 时代的名字导入了
+> `IconPlusOutline16` / `IconCloseOutline16` / `IconRefreshOutline16` /
+> `IconChevronDownOutline14`，而真机是 **DSH 0.2.0-rc.2**，图标的命名约定已改成
+> `Icon<Name>Outline{Medium|Regular}`。这些导入在运行期是 `undefined`，渲染
+> `<undefined />` 会抛错，于是**面板和设置节同时变空白**，而侧边栏那行（纯内联 SVG、
+> 不用任何 SDK 图标）却正常 —— 这种「一半好用一半空白」最容易看成一团谜。
+> `typecheck` 之所以放行，是因为手写的 `types/dsh/index.d.ts` 本身就抄错了。
+> 现在：图标由插件自己画（`src/client/icon.tsx`），SDK shim 不再声明任何 `Icon*`，
+> `verify:sdk` 直接读 `app.asar` 里的真包逐个核对，座位外面还套了渲染护栏
+> （`src/client/error-boundary.tsx`），出错时显示可读信息而不是空白。
+>
+> **为什么必须有 `boot-check`**：本插件还曾在同一种「全绿但真机不可用」里栽过 —— `learn_code_from_web`
+> 的 `output.schema` 用了语法糖 `required: true`，而运行时的 schema 校验器**拒绝**该写法并
+> **中止整个工具注册**。单测全部注入假 transport、从不经过真实加载器，所以完全看不到。
 > **只有真启动会走那道校验。** 改动工具 schema、插槽注册或服务挂载后，请跑一次
 > `pnpm run boot-check <profile>`。
 
@@ -260,13 +274,16 @@ pnpm run smoke
 「未决策」与「答了 false」是两回事：`false`（「不要降级」）是**有效答案**，必须与
 `undefined`（「还没问」）区分开。
 
-### 首次启用：面板放哪
+### 显示位置：默认两处都显示
 
-首次启用弹一次选择，三选一，之后可在面板里随时重开：
+默认 `entryPlacement: 'both'`，**不弹任何首次选择对话框**。要改就在插件设置页（或侧边栏
+面板）最上面的「显示位置」里选，然后点「保存显示位置」：
 
-- **仅侧边栏面板**
-- **仅设置页**
-- **侧边栏 + 设置页都显示**（两者数据同源，天然同步）
+- **侧边栏面板** —— 侧边栏靠上位置显示 GitHub 猫标 + `codehub`
+- **设置页** —— 设置里增加一节「DSH CodeHub 设置」
+- **侧边栏 + 设置页（默认）** —— 两处都显示（两者数据同源，天然同步）
+
+座位跟随**已保存**的配置：点单选框本身不会动界面，保存成功后立即重新注册，不用重载页面。
 
 ---
 

@@ -134,25 +134,22 @@ export const zh = {
   'deepread.core': '核心模块',
   'deepread.tests': '测试',
 
-  // -- 12. entry placement -------------------------------------------------
-  'entry.title': '入口位置',
-  'entry.current': '当前',
-  'entry.sidebar': '仅侧边栏面板',
-  'entry.settings': '仅设置页',
-  'entry.both': '两者都显示',
-  'entry.sidebarDesc': '注册 sidebar.panellist（id codehub）+ main（key codehub）',
-  'entry.settingsDesc': '只注册 settings.section，不占用侧边栏',
-  'entry.bothDesc': '三处全注册',
-  'entry.reopen': '重新打开入口位置选择',
-  'entry.firstRunTitle': '选择 dsh-codehub 的入口位置',
-  'entry.firstRunIntro': '三选一。之后随时可以点「重新打开入口位置选择」改回来，不会锁死。',
-  'entry.apply': '应用并写入配置',
-  'entry.applying': '写入中…',
-  'entry.later': '先不选',
-  'entry.close': '关闭',
-  'entry.latchNote':
-    '选择会同时写入 host 配置（PATCH /api/dsh-codehub/config）与本地一次性标记 dsh-codehub:first-run:v1。',
-  'entry.switchNote': '切换入口时会先拆掉旧注册，再注册新的落点。',
+  // -- 12. where the plugin appears ----------------------------------------
+  // A plain saved setting: both surfaces are ON by default, and the user changes
+  // it here. There is deliberately no first-run chooser to ask with.
+  'entry.title': '显示位置',
+  'entry.hint': '默认侧边栏和设置页都显示。改完点「保存」生效，不用重新加载页面。',
+  'entry.sidebar': '侧边栏面板',
+  'entry.sidebarDesc': '侧边栏顶部显示 GitHub 猫标 + codehub，点开是完整面板。',
+  'entry.settings': '设置页',
+  'entry.settingsDesc': '在设置里增加一节「DSH CodeHub 设置」。',
+  'entry.both': '侧边栏 + 设置页（默认）',
+  'entry.bothDesc': '两处都显示，也是最省事的选项。',
+  'entry.current': '当前生效',
+  'entry.inSync': '与已保存的设置一致',
+  'entry.unsaved': '已改动，点保存后才生效',
+  'entry.save': '保存显示位置',
+  'entry.saving': '保存中…',
 
   // -- 13. CSDN provenance (constant rendered next to it) ------------------
   'csdn.endpoint': '搜索端点',
@@ -332,25 +329,20 @@ export const en: Record<LocaleKey, string> = {
   'deepread.core': 'Core modules',
   'deepread.tests': 'Tests',
 
-  'entry.title': 'Entry placement',
-  'entry.current': 'Current',
-  'entry.sidebar': 'Sidebar panel only',
-  'entry.settings': 'Settings page only',
-  'entry.both': 'Show both',
-  'entry.sidebarDesc': 'Registers sidebar.panellist (id codehub) + main (key codehub)',
-  'entry.settingsDesc': 'Registers settings.section only; takes no sidebar space',
-  'entry.bothDesc': 'Registers all three seats',
-  'entry.reopen': 'Reopen entry placement chooser',
-  'entry.firstRunTitle': 'Choose where dsh-codehub appears',
-  'entry.firstRunIntro':
-    'Pick one of three. You can change it any time with "Reopen entry placement chooser" — nothing is locked in.',
-  'entry.apply': 'Apply and write config',
-  'entry.applying': 'Writing…',
-  'entry.later': 'Not now',
-  'entry.close': 'Close',
-  'entry.latchNote':
-    'The choice is written to both the host config (PATCH /api/dsh-codehub/config) and the local one-shot marker dsh-codehub:first-run:v1.',
-  'entry.switchNote': 'Switching tears the old registrations down first, then registers the new seats.',
+  // -- 12. where the plugin appears ----------------------------------------
+  'entry.title': 'Where it appears',
+  'entry.hint': 'Both surfaces are on by default. Change them here and press Save — no page reload needed.',
+  'entry.sidebar': 'Sidebar panel',
+  'entry.sidebarDesc': 'Puts the GitHub cat mark + codehub at the top of the sidebar; opens the full panel.',
+  'entry.settings': 'Settings page',
+  'entry.settingsDesc': 'Adds a "DSH CodeHub settings" section to settings.',
+  'entry.both': 'Sidebar + settings page (default)',
+  'entry.bothDesc': 'Both surfaces — the least surprising choice.',
+  'entry.current': 'In effect',
+  'entry.inSync': 'Matches the saved setting',
+  'entry.unsaved': 'Changed — press Save to apply',
+  'entry.save': 'Save placement',
+  'entry.saving': 'Saving…',
 
   'csdn.endpoint': 'Search endpoint',
 

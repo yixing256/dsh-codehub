@@ -15,7 +15,9 @@
 import { useEffect } from 'react'
 import type { ReactElement } from 'react'
 
+import { UI_ENTRY_LABEL } from '../contract.js'
 import { attachSettingsScope, loadConfig, useConfigState } from './api.js'
+import { GitHubCatGlyph } from './icon.js'
 import { useTranslate } from './locales.js'
 import type { Translate } from './locales.js'
 import { CodeHubControls, IconRefresh, LearningBanner } from './panel.js'
@@ -50,6 +52,12 @@ export function CodeHubSettingsCard(props: SettingsCardProps): ReactElement {
   return (
     <div className={styles.settingsRoot}>
       <header className={styles.header}>
+        {/* Same GitHub cat mark + word as the sidebar row and the panel header,
+            so the settings section is unmistakably this plugin's. */}
+        <span className={styles.entryMark}>
+          <GitHubCatGlyph size={18} />
+          <span className={styles.entryMarkText}>{UI_ENTRY_LABEL}</span>
+        </span>
         <h2 className={styles.title}>{t('settings.title')}</h2>
         <p className={styles.subtitle}>{t('settings.intro')}</p>
       </header>

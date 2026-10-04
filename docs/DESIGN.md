@@ -56,23 +56,39 @@ readonly is_verbatim_copy: false
 
 ---
 
-## 1. 入口位置选择方案
+## 1. 显示位置
 
-插件首次启用时（`config.onboarded === false`）弹一次性对话框，让用户三选一：
+**默认两处都显示，不询问。** 早期版本在 `config.onboarded === false` 时弹一次性对话框
+让用户三选一；那个对话框已删除（用户明确要求「不要每次打开就问我显示在哪里」）。
+`onboarded` 字段保留仅为 schema 兼容，默认已是 `true`。
 
 | 选项 | 注册的落点 |
 |---|---|
-| 仅侧边栏面板 | `sidebar.panellist`（id `codehub`）+ `main`（key `codehub`） |
-| 仅设置页 | `settings.section`（id `codehub`） |
-| 两者都显示 | 上述三处全注册 |
+| 侧边栏面板 | `sidebar.panellist`（id `codehub`）+ `main`（key `codehub`） |
+| 设置页 | `settings.section`（id `codehub`） |
+| 两处都显示（默认 `entryPlacement: 'both'`） | 上述三处全注册 |
+
+显示位置是**插件设置页里的一项普通设置**（`CodeHubControls` 的第一项，设置页与侧边栏面板
+共用同一控件）：三个选项各自成行、标题与说明分两行，点「保存显示位置」走
+`saveDraft()` → `PATCH /api/dsh-codehub/config`，保存成功后由 `subscribeConfig` 驱动
+重新注册座位 —— **保存一次即生效，不重载页面，也不再追问**。
 
 关键实现事实：
 
-- **`sidebar.panellist` 是 `kind: 'list'`、`replaceRisk: 'none'` 的槽位**，现有 occupant 为 `mf/plugins` 与 `@linxin666/dsh-client-ui-task-board`。`main` 是 `kind: 'keyed'`、按 panel id 派发的槽位 —— 侧边栏按钮的 id 与 `main` 的 key 同名即可配对。
+- **`sidebar.panellist` 收的是「图标」，不是面板。** 该槽位由 shell 拥有按钮、label、
+  tooltip 与轨道几何，只把 `{ size }` 交给组件；`main` 才是整页面板。这正是原生
+  `dsh-ssh` 的写法（`sidebar.panellist` → `SshPanelIcon`，`main` → `SshPanelPage`）。
+  把整块面板挂到 `sidebar.panellist` 会让该行不可用（早期版本就是这么错的，表现为
+  「侧边栏找不到入口」）。本项目注册 `CodeHubPanelGlyph`（GitHub 猫标，`currentColor`）。
+- 侧边栏行文本固定为 `UI_ENTRY_LABEL = 'codehub'`（不走字典，避免被翻译改掉），
+  `UI_ENTRY_ORDER = 5` 让它排在侧边栏靠上位置。
+- **`sidebar.panellist` 是 `kind: 'list'`、`replaceRisk: 'none'` 的槽位**。`main` 是
+  `kind: 'keyed'`、按 panel id 派发的槽位 —— 侧边栏按钮的 id 与 `main` 的 key 同名即可配对。
 - 早期插件（如 `@linxin666/dsh-ssh`）因为当时没有可用槽位，改用了 **DOM 注入**（自愈 MutationObserver）。**本项目不走 DOM 注入** —— 运行时已支持槽位注册，用槽位更干净。
-- 一次性 latch 用 `sessionStorage` / `localStorage` 键 `dsh-codehub:first-run:v1`，读取包在 `try/catch` 里（存储可能被禁用）。全仓没有 first-run 先例，最近的可用模式是 `dsh-remote-web-ui` 的 sessionStorage marker。
-- 对话框渲染在 `shell.overlay` 槽位（`kind: 'list'`、root scope），用 `@deepseek-ai/dsh-client-ui-primitives` 的 `Modal`。
-- **落点选择不阻塞 tool**，并必须提供「重新打开选择」入口（没有 shell 级 first-run hook，用户改错了要有退路）。
+- 座位跟随**已保存**的配置（`config.entryPlacement`），不跟草稿：点单选框本身不会动 shell，
+  只有保存成功才重新注册。
+- 登录对话框仍渲染在 `shell.overlay` 槽位（`kind: 'list'`、root scope）。
+- **显示位置不阻塞 tool**，改错了随时在设置里改回来。
 
 ---
 

@@ -43,8 +43,54 @@ const CLIENT_ID = 'dsh-codehub'
 /** tsdown's CommonJS chunk, wrapped into the final artifact below. */
 const BUNDLE = path.join(ROOT, 'lib', 'client.cjs')
 
+/** The stylesheet tsdown emits next to the chunk; inlined, then removed. */
+const STYLESHEET = path.join(ROOT, 'lib', 'client.css')
+
 /** The artifact DSH serves for `exports['./client']`. */
 const ARTIFACT = path.join(ROOT, 'lib', 'client.js')
+
+/**
+ * The CSS injection prologue.
+ *
+ * WHY THE STYLESHEET MUST BE INLINED
+ * ----------------------------------
+ * tsdown extracts `*.module.css` into `lib/client.css` and leaves the JS holding
+ * only the scoped class-NAME map (`{ optionList: '_3O5m1a_optionList', … }`). With
+ * the stylesheet left as a separate file, nothing ever loads it: DSH's client
+ * module loader fetches the plugin's JS entry and nothing else, and a plugin has
+ * no hook to register a second asset. Every class then resolves to a scope hash
+ * with no rules behind it, so the whole panel renders UNSTYLED — dense, unspaced,
+ * cramped — which is exactly how the placement chooser looked to the user.
+ *
+ * Shipping browser halves do not ship a sibling stylesheet at all (dsh-ssh's lib/
+ * is client.js + index.js + types): they carry the CSS as a string inside the
+ * bundle and inject one guarded `<style>` tag on materialization. This emits the
+ * same thing, with the same `data-plugin-css` de-duplication marker, so a second
+ * module materialization cannot stack duplicate sheets.
+ *
+ * `textContent` (never `innerHTML`) means the stylesheet text is never parsed as
+ * HTML. The `typeof document` guard keeps the module importable where there is no
+ * DOM (tests, SSR).
+ *
+ * @param cssText - the emitted stylesheet, verbatim.
+ * @returns the prologue to place inside the factory, before the chunk.
+ */
+function cssInjection(cssText) {
+  const tagId = `${CLIENT_ID}/lib/client.css`
+  return `    //#region ${CLIENT_ID} stylesheet (inlined; see scripts/wrap-client.mjs)
+    var __dshCssText = ${JSON.stringify(cssText)};
+    var __dshCssTagId = ${JSON.stringify(tagId)};
+    if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(__dshCssTagId) + "]") === null) {
+      var __dshCssTag = document.createElement("style");
+      __dshCssTag.dataset.plugin = ${JSON.stringify(CLIENT_ID)};
+      __dshCssTag.dataset.pluginCss = __dshCssTagId;
+      __dshCssTag.textContent = __dshCssText;
+      document.head.appendChild(__dshCssTag);
+    }
+    //#endregion
+`
+}
+
 
 /** Intro of the served artifact; matches the shipping browser halves. */
 const INTRO = `// dsh-codehub — browser half, in the DSH client module loader format.
@@ -89,18 +135,32 @@ async function main() {
     return
   }
 
-  await writeFile(ARTIFACT, INTRO + chunk + OUTRO, 'utf8')
-
-  // The unwrapped chunk has no remaining consumer: package.json points at
-  // lib/client.js, and leaving the intermediate would ship a second copy of the
-  // browser half inside the package.
+  // The stylesheet is optional: a build with no `*.module.css` import emits none.
+  let cssText = ''
   try {
-    await rm(BUNDLE, { force: true })
+    cssText = await readFile(STYLESHEET, 'utf8')
   } catch {
-    // Non-fatal: a stale intermediate is untidy, not broken.
+    cssText = ''
   }
 
-  console.log(`wrap-client: wrote ${path.relative(ROOT, ARTIFACT)} (loader id ${CLIENT_ID})`)
+  const styles = cssText.trim().length > 0 ? cssInjection(cssText) : ''
+  await writeFile(ARTIFACT, INTRO + styles + chunk + OUTRO, 'utf8')
+
+  // Neither intermediate has a remaining consumer. In particular the standalone
+  // stylesheet MUST go: it is now inlined above, and leaving it would ship a
+  // second copy of the panel's CSS that nothing loads.
+  for (const intermediate of [BUNDLE, ...(styles.length > 0 ? [STYLESHEET] : [])]) {
+    try {
+      await rm(intermediate, { force: true })
+    } catch {
+      // Non-fatal: a stale intermediate is untidy, not broken.
+    }
+  }
+
+  const inlined = styles.length > 0 ? `, CSS inlined (${cssText.length}B)` : ', no CSS'
+  console.log(
+    `wrap-client: wrote ${path.relative(ROOT, ARTIFACT)} (loader id ${CLIENT_ID}${inlined})`,
+  )
 }
 
 await main()

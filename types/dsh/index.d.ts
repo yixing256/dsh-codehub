@@ -23,6 +23,12 @@
  * evidence — never widen it speculatively.
  *
  * CORRECTIONS THIS FILE ENCODES (do not "fix" them back):
+ *  - `ToolDefinition.parameters` is RAW JSON Schema. It was typed here as the
+ *    sugar `Record<string, ParamSpec> | ObjectSchema`, which is what let a
+ *    schema whose root keys are the parameter names ship — and `maxItems` as a
+ *    root key made the provider reject the tool ("is not of type integer"),
+ *    killing every conversation. Only `defineTool()` compiles the sugar DSL;
+ *    `tools.register()` forwards `parameters` verbatim. See the field's own doc.
  *  - `settings` has NO `installSection` and NO `register`. Settings forms are
  *    derived from a plugin's exported schemastery `Config`. dsh-ssh's
  *    `installSection` call site is dead code on this runtime (both `typeof`
@@ -83,7 +89,8 @@ declare module '@deepseek-ai/dsh-tools' {
     additionalProperties?: boolean
   }
 
-  /** The full JSON-Schema object form, used for `output.schema`.
+  /**
+   * The full JSON-Schema object form, used for `output.schema`.
    *
    *  `required` is an ARRAY OF PROPERTY NAMES here, not the sugar boolean.
    *  Writing `required: true` on a property of an `output.schema` fails the
@@ -98,7 +105,26 @@ declare module '@deepseek-ai/dsh-tools' {
   export interface ToolDefinition {
     name: string
     description: string
-    parameters?: Record<string, ParamSpec> | ObjectSchema
+    /**
+     * JSON Schema object for the arguments — RAW JSON Schema, not the `ParamSpec`
+     * map above.
+     *
+     * CORRECTION (observed live, 2026-10-03, and the cause of a total outage):
+     * `tools.register()` forwards this object to the provider UNCHANGED. Only
+     * `defineTool()` compiles the per-property DSL into JSON Schema, via
+     * `parameterSchemaSpecToJsonSchema`. A hand-built definition that passes
+     * `{ query: {...}, maxItems: {...} }` therefore ships a schema whose root keys
+     * are the parameter names, and any name that is also a JSON Schema keyword is
+     * read as that keyword. The live failure was:
+     *
+     *   Invalid schema for function 'learn_code_from_web':
+     *   {"type":"integer","description":"…"} is not of type "integer"
+     *
+     * i.e. the `maxItems` PROPERTY read as the `maxItems` KEYWORD. The earlier
+     * `Record<string, ParamSpec>` typing on this field was WRONG and is what let
+     * the bug ship; do not restore it.
+     */
+    parameters?: Record<string, unknown>
     output?: {
       schema: ObjectSchema
       render: (args: never, value: never) => ContentBlock[]
@@ -330,21 +356,26 @@ declare module '@deepseek-ai/dsh-client-ui-primitives' {
 
   export function Menu(props: Record<string, unknown>): ReactNode
 
-  export interface IconProps {
-    size?: number
-    className?: string
-  }
-  export function IconChevronDownOutline14(props: IconProps): ReactNode
-  export function IconPlusOutline16(props: IconProps): ReactNode
-  export function IconSettingsOutline16(props: IconProps): ReactNode
-  export function IconCheckOutline14(props: IconProps): ReactNode
-  export function IconSearchOutline16(props: IconProps): ReactNode
-  export function IconCloseOutline16(props: IconProps): ReactNode
-  export function IconRefreshOutline16(props: IconProps): ReactNode
-  export function IconCopyOutline16(props: IconProps): ReactNode
-  export function IconDownloadOutline16(props: IconProps): ReactNode
-  export function IconBranchOutline16(props: IconProps): ReactNode
-  export function IconStopFill16(props: IconProps): ReactNode
+  /*
+   * ICONS ARE DELIBERATELY NOT DECLARED HERE. DO NOT ADD THEM BACK.
+   *
+   * This block used to declare `IconPlusOutline16`, `IconCloseOutline16`,
+   * `IconRefreshOutline16`, `IconChevronDownOutline14` and seven more. Those names
+   * exist in NO shipped runtime: the desktop app here is DSH 0.2.0-rc.2 and the
+   * primitive icon convention is `Icon<Name>Outline{Medium|Regular}` — numeric
+   * suffixes are gone (verified against the live package read out of `app.asar`;
+   * all 11 old names are absent, 186 new-style icon names are present).
+   *
+   * Declaring the stale names here was worse than a doc error: it made `tsc`
+   * accept imports that were `undefined` at runtime, and rendering an undefined
+   * component throws — which blanked the panel and the settings section entirely
+   * while typecheck, build and the whole unit suite stayed green.
+   *
+   * So the browser half now draws its own glyphs (`src/client/icon.tsx`), and this
+   * shim declares only the primitives it really imports. A re-added SDK icon fails
+   * `tsc` here, and `scripts/check-sdk-surface.mjs` independently verifies every
+   * VALUE imported from `@deepseek-ai/*` against the installed runtime.
+   */
 }
 
 declare module '@deepseek-ai/dsh-client-locale' {

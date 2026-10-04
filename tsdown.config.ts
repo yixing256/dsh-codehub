@@ -27,11 +27,17 @@ import { defineConfig } from 'tsdown'
  * - `schemastery` is a real runtime dependency (package.json `dependencies`) and
  *   must stay external so the settings schema is shared with the host, not
  *   duplicated inside the bundle.
- * - `@deepseek-ai/*` is the SDK. It is NOT installed on disk — it ships inside
- *   DSH's app.asar and is provided by the loader at runtime. Without this
- *   external the real host half could never build ("could not resolve
- *   '@deepseek-ai/dsh-tools'"), which is why it is listed here even though the
- *   brief only named schemastery.
+ * - `@deepseek-ai/*` is the SDK. It is provided by the loader at runtime from
+ *   DSH's `app.asar`. Without this external the real host half could never build
+ *   ("could not resolve '@deepseek-ai/dsh-tools'"), which is why it is listed here
+ *   even though the brief only named schemastery.
+ *
+ *   NOTE ON VERSION DRIFT — the trap this repo hit twice. A copy of these packages
+ *   IS present in `node_modules` (0.1.5-rc.3, pulled in as peer deps), which is
+ *   what `types/dsh/index.d.ts` was mirrored from, while the desktop app runs
+ *   0.2.0-rc.2. Typecheck therefore validates against the WRONG surface. Keep them
+ *   external, and let `scripts/check-sdk-surface.mjs` compare every value import
+ *   against the real package inside `app.asar`.
  * - Node builtins are external automatically under `platform: 'node'`.
  */
 const HOST_RUNTIME_EXTERNALS: (string | RegExp)[] = ['schemastery', /^@deepseek-ai\//]
@@ -46,8 +52,12 @@ const HOST_RUNTIME_EXTERNALS: (string | RegExp)[] = ['schemastery', /^@deepseek-
  *   otherwise inline it (deps in `peerDependencies` are external by default,
  *   devDependencies are not).
  * - `@deepseek-ai/*` — the client SDK (locale, renderer/slots, settings,
- *   primitives). Phantom dependencies: neither installed nor resolvable, so
- *   inlining is impossible and the build would fail outright.
+ *   primitives). Loaded from the runtime, never inlined: inlining would freeze a
+ *   copy of the shell's UI atoms into this plugin and break hooks/theming. The
+ *   version-drift trap described above applies here too, and it BIT: the old icon
+ *   names (`Icon*Outline16`) do not exist on 0.2.0-rc.2, so importing them was
+ *   `undefined` at runtime and blanked both seats. The plugin now draws its own
+ *   glyphs and `scripts/check-sdk-surface.mjs` gates every value import.
  */
 const CLIENT_RUNTIME_EXTERNALS: (string | RegExp)[] = [
   'react',
@@ -114,13 +124,15 @@ export default defineConfig([
     // `splitting: false` (the default) puts every stylesheet of this build into
     // one file, named here: lib/client.css.
     //
-    // OPEN QUESTION for the `client` teammate: `inject` stays false, so the JS
-    // keeps NO reference to lib/client.css. If DSH's module loader only fetches
-    // `lib/client.js`, the stylesheet never reaches the page — verify against a
-    // shipping client plugin, then either set `css: { inject: true }` (the JS
-    // then keeps an `import './client.css'` the loader must resolve) or mount the
-    // styles from JS (e.g. an inline `?inline` import). Decide from live evidence,
-    // not from this comment.
+    // ANSWERED (this used to be an open question — the answer was "it never
+    // reaches the page"). `inject` stays false, so this emit leaves the JS with no
+    // reference to lib/client.css at all — and DSH's client loader only fetches the
+    // JS entry, so nothing ever loaded it. Every `styles.foo` was then a scoped
+    // hash with no rule behind it: the whole panel rendered UNSTYLED and cramped.
+    // Shipping halves carry their CSS inside the bundle and inject one guarded
+    // <style> tag, which is what `scripts/wrap-client.mjs` now does with this file.
+    // So do NOT "fix" this by setting `css: { inject: true }`: that would only add
+    // an `import './client.css'` the module loader cannot resolve.
     css: { fileName: 'client.css' },
   },
   {

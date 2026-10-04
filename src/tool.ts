@@ -61,6 +61,28 @@ export const LEARN_CODE_TOOL_DESCRIPTION =
 
 // ---------------------------------------------------------------------------
 // Arguments.
+//
+// `parameters` IS RAW JSON SCHEMA. THE SUGAR PER-PROPERTY MAP IS NOT ACCEPTED.
+// ---------------------------------------------------------------------------
+// `ToolSchema.parameters` (dsh-llm) is documented as "JSON Schema object for the
+// arguments", and `tools.register()` hands that object to the provider
+// UNCHANGED. Only `defineTool()` compiles the author-facing per-property DSL
+// (`parameterSchemaSpecToJsonSchema`); a definition built by hand — which is what
+// `buildLearnCodeTool()` returns — is never compiled.
+//
+// Handing `register()` the DSL map therefore ships a schema whose ROOT KEYS are
+// the parameter names. Any parameter whose name is also a JSON Schema keyword is
+// then read as that keyword, and the provider rejects the whole tool — which
+// takes every conversation down, not just this tool:
+//
+//   Invalid schema for function 'learn_code_from_web':
+//   {"type":"integer","description":"本次最多返回多少条。…"} is not of type "integer"
+//
+// That message is the provider reading the `maxItems` PROPERTY as the `maxItems`
+// KEYWORD, which must be an integer. Hence the rule encoded below: the root is
+// always `{ type: 'object', properties }`, so a property name can never be
+// interpreted as a schema keyword. `test/tool-schema.test.ts` asserts both the
+// shape and the absence of that exact failure.
 // ---------------------------------------------------------------------------
 
 export interface LearnCodeArgs {
@@ -70,10 +92,31 @@ export interface LearnCodeArgs {
   readonly maxItems?: number | undefined
 }
 
-const PARAM_SPECS: Record<(typeof TOOL_PARAMS)[number], ParamSpec> = {
+/** One JSON-Schema node, in the subset this tool's arguments use. */
+export interface ParamNode {
+  readonly type: 'string' | 'integer' | 'boolean' | 'array' | 'object'
+  readonly description?: string
+  readonly enum?: readonly string[]
+  readonly items?: ParamNode
+}
+
+/**
+ * The arguments schema the provider receives.
+ *
+ * Deliberately a `type` alias (not an `interface`): an object literal type
+ * carries an implicit index signature, which is what makes it assignable to the
+ * runtime's `Record<string, unknown>` `parameters` field without a cast.
+ */
+export type LearnCodeParameters = {
+  readonly type: 'object'
+  readonly additionalProperties: false
+  readonly required: readonly string[]
+  readonly properties: Readonly<Record<(typeof TOOL_PARAMS)[number], ParamNode>>
+}
+
+const PARAM_PROPERTIES: Readonly<Record<(typeof TOOL_PARAMS)[number], ParamNode>> = {
   query: {
     type: 'string',
-    required: true,
     description: '要学习的主题、API 名称或问题，例如「cordis service 生命周期」或「undici proxy agent」。',
   },
   sources: {
@@ -92,8 +135,24 @@ const PARAM_SPECS: Record<(typeof TOOL_PARAMS)[number], ParamSpec> = {
   },
 }
 
+/**
+ * The required parameter names, in the top-level array form.
+ *
+ * The array form is load-bearing for the same reason it is in the output schema:
+ * a boolean `required` on a property is not valid JSON Schema here.
+ */
+export const LEARN_CODE_REQUIRED_PARAMS: readonly string[] = ['query']
+
+/** The compiled `parameters` schema. See the section header for why it is raw. */
+export const LEARN_CODE_PARAMETERS: LearnCodeParameters = {
+  type: 'object',
+  additionalProperties: false,
+  required: [...LEARN_CODE_REQUIRED_PARAMS],
+  properties: PARAM_PROPERTIES,
+}
+
 /** Declared parameter names, in contract order. */
-export const LEARN_CODE_PARAM_NAMES: readonly string[] = TOOL_PARAMS.filter((name) => name in PARAM_SPECS)
+export const LEARN_CODE_PARAM_NAMES: readonly string[] = TOOL_PARAMS.filter((name) => name in PARAM_PROPERTIES)
 
 function readArgs(raw: unknown): LearnCodeArgs {
   if (typeof raw !== 'object' || raw === null) {
@@ -461,10 +520,10 @@ export function buildLearnCodeTool(deps: LearnCodeToolDeps = {}): ToolDefinition
   return {
     name: TOOL_NAME,
     description: LEARN_CODE_TOOL_DESCRIPTION,
-    // Spread so the declared `Record<string, ParamSpec>` index signature is what
-    // the runtime sees, while `PARAM_SPECS` keeps its exact-key type (which is
-    // what makes a missing/renamed parameter a compile error).
-    parameters: { ...PARAM_SPECS },
+    // RAW JSON Schema — never the per-property DSL map. See the "Arguments"
+    // section header: `register()` does not compile the DSL, it forwards it, and
+    // a root-level `maxItems` key is what broke every conversation.
+    parameters: LEARN_CODE_PARAMETERS,
     timeoutMs: HARD_LIMITS.timeoutMs,
     output: {
       schema: LEARN_CODE_OUTPUT_SCHEMA,

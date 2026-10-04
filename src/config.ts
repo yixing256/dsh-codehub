@@ -76,7 +76,15 @@ export type EntryPlacement = (typeof ENTRY_PLACEMENTS)[number]
 /** Defaults the schema declares, kept in one object so copy and code agree. */
 export const SCHEMA_DEFAULTS = {
   enabled: true,
-  onboarded: false,
+  /**
+   * Kept for schema compatibility, and now always true.
+   *
+   * It used to gate a first-run dialog that asked the user where the plugin
+   * should appear. That dialog is gone: both surfaces are on by default and the
+   * choice is an ordinary setting (`entryPlacement`) the user changes in the
+   * plugin's settings page. Nothing asks on startup.
+   */
+  onboarded: true,
   entryPlacement: 'both' satisfies EntryPlacement,
   announceToAgent: true,
   htmlFallback: true,
@@ -110,11 +118,14 @@ export const Config = Schema.object({
 
   onboarded: Schema.boolean()
     .default(SCHEMA_DEFAULTS.onboarded)
-    .description('是否已完成「入口位置」首次选择。未完成时浏览器端会弹一次性对话框；不影响工具调用。'),
+    .description('历史字段，保留兼容。首次选择对话框已移除，默认即为「侧边栏 + 设置页」，不再询问。'),
 
   entryPlacement: Schema.union(ENTRY_PLACEMENTS)
     .default(SCHEMA_DEFAULTS.entryPlacement)
-    .description('浏览器端落点：both=侧边栏面板+设置页都注册；sidebar=仅侧边栏；settings=仅设置页。'),
+    .description(
+      '插件显示在哪里：both=侧边栏面板+设置页（默认）；sidebar=仅侧边栏；settings=仅设置页。' +
+        '侧边栏入口是顶部的 GitHub 猫标 + codehub。改完在插件设置里点「保存显示位置」生效。',
+    ),
 
   announceToAgent: Schema.boolean()
     .default(SCHEMA_DEFAULTS.announceToAgent)

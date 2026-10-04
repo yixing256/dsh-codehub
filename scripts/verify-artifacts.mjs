@@ -12,6 +12,11 @@
  *      prompt section (i.e. it is in the host bundle at all, and twice)
  *   4. 备注① / 备注② — their exact strings survive bundling
  *   5. the client bundle is the DSH client-module-loader artifact, not bare ESM
+ *   5b. the tool's `parameters` is RAW JSON Schema with an object root — the
+ *      provider gets that object verbatim, and a parameter name at the root
+ *      (`maxItems`) is read as the JSON-Schema keyword and rejected
+ *   5c. the client's stylesheet is INLINED into the bundle, with no orphan
+ *      `lib/client.css` that nothing would load
  *   6. package.json / cordis.patch.yml / README all spell `dsh-codehub`
  *
  * Run: node scripts/verify-artifacts.mjs   (after `pnpm run build`)
@@ -89,6 +94,97 @@ want('client exposes inject', client, 'exports.inject = inject')
 want('client defers its body into the factory', client, 'return module.exports;')
 // React must stay external: a second React copy breaks hooks.
 want('client keeps react external', client, 'require("react")')
+
+// ---- 5b. the tool's argument schema is RAW JSON Schema -------------------
+//
+// The provider receives `definition.parameters` VERBATIM: `tools.register()`
+// validates only `output.schema` and never touches `parameters`, and only
+// `defineTool()` compiles the author-facing per-property DSL. Shipping the DSL
+// map puts the PARAMETER NAMES at the schema ROOT, so the provider reads the
+// `maxItems` property as the `maxItems` KEYWORD (which must be an integer) and
+// rejects the whole tool:
+//
+//   Invalid schema for function 'learn_code_from_web':
+//   {"type":"integer","description":"…"} is not of type "integer"
+//
+// That kills every conversation, not just the tool. Asserted here against the
+// BUILT bundle, because that object is what actually reaches the provider.
+const paramsLiteral = /const LEARN_CODE_PARAMETERS = \{([\s\S]*?)\n\};/.exec(host)?.[1] ?? ''
+if (paramsLiteral.length === 0) {
+  failures.push('host bundle has no `const LEARN_CODE_PARAMETERS = {…}` to inspect')
+} else {
+  want('tool parameters declare an object root', paramsLiteral, 'type: "object"')
+  want('tool parameters are closed', paramsLiteral, 'additionalProperties: false')
+  want('tool parameters nest the argument names under properties', paramsLiteral, 'properties: PARAM_PROPERTIES')
+  want('tool parameters use the required NAME ARRAY form', paramsLiteral, 'required:')
+  // The decisive one: a parameter name at the ROOT is a JSON-Schema keyword
+  // candidate, and `maxItems` is exactly the name that broke the provider.
+  if (/["']?maxItems["']?\s*:/.test(paramsLiteral)) {
+    failures.push(
+      'tool parameters put `maxItems` at the schema ROOT — the provider reads it as the JSON Schema keyword and rejects every request',
+    )
+  } else {
+    notes.push('  ok   no parameter name sits at the schema root (maxItems is under properties)')
+  }
+  // Non-vacuity: PARAM_PROPERTIES must really be there and really hold maxItems,
+  // otherwise the check above could pass on a schema with no arguments at all.
+  if (host.includes('const PARAM_PROPERTIES = {') && /maxItems\s*:/.test(host)) {
+    notes.push('  ok   PARAM_PROPERTIES still declares maxItems (root check is not vacuous)')
+  } else {
+    failures.push('PARAM_PROPERTIES / maxItems missing from the bundle — the root check above proves nothing')
+  }
+}
+want('tool ships that schema as `parameters`', host, 'parameters: LEARN_CODE_PARAMETERS')
+
+// ---- 5c. the client stylesheet is inlined, not orphaned -------------------
+//
+// tsdown extracts `*.module.css` to a sibling `lib/client.css` and leaves the JS
+// with only the scoped class-NAME map. Nothing loads a sibling asset (the client
+// loader fetches the JS entry alone), so an un-inlined stylesheet means every
+// class is a scope hash with no rules: the panel renders unstyled and cramped.
+// Shipping browser halves inline the CSS and inject one guarded <style> tag.
+want('client inlines its stylesheet', client, 'data-plugin-css=')
+want('client injects the stylesheet once, guarded', client, 'document.querySelector("style[data-plugin-css="')
+want('client writes the stylesheet via textContent (never innerHTML)', client, 'textContent = __dshCssText')
+want('client guards the injection for a DOM-less import', client, 'typeof document !== "undefined"')
+if (await exists('lib/client.css')) {
+  failures.push(
+    'lib/client.css is shipped but nothing loads it — a second copy of the stylesheet with no consumer; inline it and delete the file',
+  )
+} else {
+  notes.push('  ok   no orphan lib/client.css (the stylesheet lives inside lib/client.js)')
+}
+
+// The inlined stylesheet must actually COVER every class the map hands to React.
+// A map entry with no rule is a className that resolves to nothing, which is the
+// same user-visible defect as not loading the sheet at all.
+const cssLiteral = /var __dshCssText = ("(?:[^"\\]|\\.)*");/.exec(client)
+if (cssLiteral === null) {
+  failures.push('client has no `__dshCssText` literal to compare against the class map')
+} else {
+  const inlinedCss = JSON.parse(cssLiteral[1])
+  const mapStart = client.indexOf('var panel_module_default = {')
+  const mapEnd = mapStart === -1 ? -1 : client.indexOf('};', mapStart)
+  if (mapStart === -1 || mapEnd === -1) {
+    failures.push('client has no `panel_module_default` class map to compare against the stylesheet')
+  } else {
+    const entries = [...client.slice(mapStart, mapEnd).matchAll(/"([A-Za-z0-9_]+)": "([^"]+)"/g)].map((m) => [
+      m[1],
+      m[2],
+    ])
+    const unstyled = entries.filter(([, scoped]) => !inlinedCss.includes(`.${scoped}`))
+    if (entries.length === 0) {
+      failures.push('the class map is empty — the stylesheet-coverage check would be vacuous')
+    } else if (unstyled.length > 0) {
+      failures.push(
+        `${unstyled.length} class-map entries have no rule in the inlined stylesheet: ` +
+          unstyled.map(([key, scoped]) => `${key} -> ${scoped}`).join(', '),
+      )
+    } else {
+      notes.push(`  ok   all ${entries.length} class-map entries have a rule in the inlined stylesheet`)
+    }
+  }
+}
 
 // ---- 6. identity is consistent everywhere ---------------------------------
 if (pkg.name === 'dsh-codehub') notes.push('  ok   package.json name = dsh-codehub')

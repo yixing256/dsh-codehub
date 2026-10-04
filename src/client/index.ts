@@ -20,36 +20,72 @@
  * every seat goes through `ctx.slots.inject(slot, cb)`, which waits for the
  * declaration and then registers inside the callback.
  *
+ * SIDEBAR ROW CONTRACT — this is not the panel
+ * --------------------------------------------
+ * `sidebar.panellist` takes a GLYPH, not a page. The shell owns the row button,
+ * the label, the tooltip and the rail geometry, and passes the component only a
+ * `{ size }` share (verified against shipping panels: `dsh-ssh` registers
+ * `SshPanelIcon` there and its page on `main`). Registering the full panel on
+ * this slot — which this plugin used to do — leaves the row broken/unusable, so
+ * the entry is effectively invisible. `CodeHubPanelGlyph` draws the GitHub cat
+ * mark; `main` carries the panel itself.
+ *
  * PLACEMENT CONTRACT
  * ------------------
- * `entryPlacement` decides which seats exist at all: 'sidebar' registers
- * `sidebar.panellist` + `main`, 'settings' registers `settings.section` only,
- * 'both' registers all three. Switching placements tears the old registrations
- * down BEFORE the new ones are created — re-registering the same seat id while
- * the old one is live would throw (and a caught throw would silently leave the
- * user on the old placement).
+ * Both surfaces are ON by default and the user changes that from the plugin's
+ * own settings page, not from a first-run dialog — there is no chooser left to
+ * ask with. `entryPlacement` is an ordinary saved setting: the seats follow the
+ * SAVED config, never the unsaved draft, so a placement change takes effect
+ * exactly once, when the user saves. That is implemented by subscribing to the
+ * config store below rather than by a dialog callback.
+ *
+ * Switching placements tears the old registrations down BEFORE the new ones are
+ * created — re-registering the same seat id while the old one is live would
+ * throw, and a caught throw would silently leave the user on the old placement.
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { LocaleService } from '@deepseek-ai/dsh-client-locale'
 import type { SlotRegistration, SlotsService } from '@deepseek-ai/dsh-client-ui-renderer'
 
-import { LOCALE_NAMESPACE, OVERLAY_SLOT, SETTINGS_NAMESPACE } from '../contract.js'
+import {
+  LOCALE_NAMESPACE,
+  OVERLAY_SLOT,
+  SETTINGS_NAMESPACE,
+  UI_ENTRY_ID,
+  UI_ENTRY_LABEL,
+  UI_ENTRY_ORDER,
+  UI_OVERLAY_ORDER,
+  UI_SETTINGS_ORDER,
+} from '../contract.js'
 import {
   attachSettingsScope,
   getConfigState,
   getSettingsScope,
   loadConfig,
-  saveConfig,
+  subscribeConfig,
 } from './api.js'
-import type { ConfigStoreState, EntryPlacement } from './api.js'
-import { FirstRunOverlay, openFirstRunChooser, readLatch, setPlacementHandler, writeLatch } from './first-run.js'
+import type { EntryPlacement } from './api.js'
+import { withSeatBoundary } from './error-boundary.js'
+import { CodeHubPanelGlyph } from './icon.js'
 import { LoginOverlay } from './login-dialog.js'
 import { dictionaries, setActiveTranslate, translateNow } from './locales.js'
 import { CodeHubPanel } from './panel.js'
-import type { SeatProps } from './panel.js'
 import { CodeHubSettingsCard } from './settings-card.js'
 import type { SettingsCardProps } from './settings-card.js'
+
+/**
+ * Every seat is wrapped in a render guard.
+ *
+ * A throw inside a seat otherwise leaves an EMPTY region with nothing to report —
+ * which is precisely how a renamed SDK icon turned into "点开什么都没有" on both
+ * surfaces at once. With the guard, the failure is a readable message naming the
+ * error and the check that localises it. See `error-boundary.tsx`.
+ */
+const GuardedPanelGlyph = withSeatBoundary(CodeHubPanelGlyph)
+const GuardedPanel = withSeatBoundary(CodeHubPanel)
+const GuardedSettingsCard = withSeatBoundary(CodeHubSettingsCard)
+const GuardedLoginOverlay = withSeatBoundary(LoginOverlay)
 
 /**
  * The services this bundle needs. Declared as a NAMED export — the loader reads
@@ -74,13 +110,7 @@ import type { SettingsCardProps } from './settings-card.js'
  */
 export const inject: string[] = ['slots', 'locale']
 
-/** The seat id shared by the panellist entry, the `main` key and settings form. */
-const PANEL_ID = 'codehub'
-const FIRST_RUN_SEAT_ID = 'codehub-first-run'
 const LOGIN_SEAT_ID = 'codehub-login'
-
-const PANEL_ORDER = 30
-const OVERLAY_ORDER = 10
 
 /** The client context, narrowed to the services named in `inject`. */
 interface ClientContext extends Context {
@@ -226,19 +256,28 @@ function mountPlacement(ctx: ClientContext, placement: EntryPlacement): void {
   placementBag = bag
 
   if (placement === 'sidebar' || placement === 'both') {
+    // The row's GLYPH, never the panel: see the SIDEBAR ROW CONTRACT above.
     mountSeat(
       ctx,
       'sidebar.panellist',
       {
         name: 'sidebar.panellist',
-        id: PANEL_ID,
-        order: PANEL_ORDER,
-        label: () => translateNow('panel.title'),
+        id: UI_ENTRY_ID,
+        order: UI_ENTRY_ORDER,
+        // The literal the user asked for; not a dictionary lookup, so the row
+        // text cannot be changed by a locale edit.
+        label: () => UI_ENTRY_LABEL,
       },
-      CodeHubPanel satisfies (props: SeatProps) => unknown,
+      GuardedPanelGlyph,
       bag,
     )
-    mountSeat(ctx, 'main', { name: 'main', key: PANEL_ID, order: PANEL_ORDER }, CodeHubPanel, bag)
+    mountSeat(
+      ctx,
+      'main',
+      { name: 'main', key: UI_ENTRY_ID, order: UI_ENTRY_ORDER, label: () => UI_ENTRY_LABEL },
+      GuardedPanel,
+      bag,
+    )
   }
 
   if (placement === 'settings' || placement === 'both') {
@@ -247,13 +286,13 @@ function mountPlacement(ctx: ClientContext, placement: EntryPlacement): void {
       'settings.section',
       {
         name: 'settings.section',
-        id: PANEL_ID,
-        order: PANEL_ORDER,
+        id: UI_ENTRY_ID,
+        order: UI_SETTINGS_ORDER,
         label: () => translateNow('panel.title'),
         locale: LOCALE_NAMESPACE,
         inject: () => ({ scope: getSettingsScope() }),
       },
-      CodeHubSettingsCard satisfies (props: SettingsCardProps) => unknown,
+      GuardedSettingsCard satisfies (props: SettingsCardProps) => unknown,
       bag,
     )
   }
@@ -262,9 +301,9 @@ function mountPlacement(ctx: ClientContext, placement: EntryPlacement): void {
 }
 
 /**
- * The first-run chooser and the credential dialogs live in `shell.overlay` and
- * are placement-independent: the user must still be able to log in (and change
- * placement) when the panel itself is not shown.
+ * The login dialog lives in `shell.overlay` and is placement-independent: the
+ * user must still be able to sign in (and change placement) when neither the
+ * sidebar row nor the settings section is shown.
  */
 function mountOverlays(ctx: ClientContext): void {
   teardownBag(overlayBag)
@@ -273,17 +312,30 @@ function mountOverlays(ctx: ClientContext): void {
   mountSeat(
     ctx,
     OVERLAY_SLOT,
-    { name: OVERLAY_SLOT, id: FIRST_RUN_SEAT_ID, order: OVERLAY_ORDER },
-    FirstRunOverlay,
+    { name: OVERLAY_SLOT, id: LOGIN_SEAT_ID, order: UI_OVERLAY_ORDER },
+    GuardedLoginOverlay,
     bag,
   )
-  mountSeat(
-    ctx,
-    OVERLAY_SLOT,
-    { name: OVERLAY_SLOT, id: LOGIN_SEAT_ID, order: OVERLAY_ORDER + 10 },
-    LoginOverlay,
-    bag,
-  )
+}
+
+// ---------------------------------------------------------------------------
+// Placement follows the SAVED config, never the draft
+// ---------------------------------------------------------------------------
+
+/** Last placement whose seats are actually registered. */
+let appliedPlacement: EntryPlacement | null = null
+
+/**
+ * Register the seats for `placement`, once.
+ *
+ * Idempotent on purpose: the config store emits on every draft keystroke, and
+ * re-running `mountPlacement` for an unchanged placement would tear down and
+ * rebuild the user's panel for no reason.
+ */
+function applyPlacement(ctx: ClientContext, placement: EntryPlacement): void {
+  if (appliedPlacement === placement) return
+  appliedPlacement = placement
+  mountPlacement(ctx, placement)
 }
 
 // ---------------------------------------------------------------------------
@@ -329,44 +381,16 @@ function attachSettings(ctx: ClientContext): void {
 // Bootstrap
 // ---------------------------------------------------------------------------
 
-/** The chooser is shown once, and reopened on demand from the panel. */
-function needsChooser(state: ConfigStoreState): boolean {
-  try {
-    if (state.loaded && state.config.onboarded) {
-      // The host says this profile is onboarded but the latch is gone (fresh
-      // browser profile, cleared storage): re-seed it rather than ask again.
-      writeLatch(state.config.entryPlacement)
-      return false
-    }
-    if (readLatch() === null) return true
-    // A latch without an onboarded config means the profile was reset (or the
-    // earlier write never landed) — ask again instead of guessing.
-    return state.loaded && state.config.onboarded === false
-  } catch (err) {
-    log('reading the first-run latch failed', err)
-    return false
-  }
-}
-
-async function handlePlacementChoice(ctx: ClientContext, placement: EntryPlacement): Promise<void> {
-  // Apply locally first: the user gets the placement they asked for even when
-  // the config write is refused. Then persist, and surface a refusal loudly.
-  mountPlacement(ctx, placement)
-  const saved = await saveConfig({ entryPlacement: placement, onboarded: true })
-  if (!saved) {
-    throw new Error(getConfigState().error ?? 'PATCH /api/dsh-codehub/config failed')
-  }
-}
-
 async function bootstrap(ctx: ClientContext): Promise<void> {
   try {
     const state = await loadConfig()
-    mountPlacement(ctx, state.config.entryPlacement)
-    if (needsChooser(state)) openFirstRunChooser(state.config.entryPlacement)
+    applyPlacement(ctx, state.config.entryPlacement)
   } catch (err) {
     log('bootstrap failed; falling back to the default placement', err)
     try {
-      mountPlacement(ctx, 'both')
+      // Both surfaces: the default the user asked for, and the default the
+      // schema declares, so a broken config route cannot hide the plugin.
+      applyPlacement(ctx, 'both')
     } catch (inner) {
       log('fallback placement failed', inner)
     }
@@ -394,12 +418,6 @@ export function apply(ctx: ClientContext): void {
   }
 
   try {
-    setPlacementHandler(placement => handlePlacementChoice(ctx, placement))
-  } catch (err) {
-    log('placement handler registration failed', err)
-  }
-
-  try {
     attachSettings(ctx)
   } catch (err) {
     log('settingsScope probe failed', err)
@@ -412,10 +430,29 @@ export function apply(ctx: ClientContext): void {
   }
 
   try {
+    // The placement setting takes effect on SAVE: the store emits whenever the
+    // host has accepted a config, and the seats follow `config` (not `draft`).
+    ctx.effect(
+      () =>
+        subscribeConfig(() => {
+          try {
+            applyPlacement(ctx, getConfigState().config.entryPlacement)
+          } catch (err) {
+            log('applying the saved entry placement failed', err)
+          }
+        }),
+      'dsh-codehub:placement-follows-config',
+    )
+  } catch (err) {
+    log('placement subscription failed', err)
+  }
+
+  try {
     ctx.effect(() => () => {
       teardownBag(placementBag)
       teardownBag(overlayBag)
-      setPlacementHandler(null)
+      // A later re-mount must be able to register the seats again.
+      appliedPlacement = null
     }, 'dsh-codehub:client-teardown')
   } catch (err) {
     log('teardown effect registration failed', err)
