@@ -21,28 +21,6 @@
 
 ### 防搬运是机制，不是叮嘱
 
-`CodeLearnResult.is_verbatim_copy` 的类型是**字面量 `false`**（不是 `boolean`）：
-
-```ts
-readonly is_verbatim_copy: false
-```
-
-没有任何可赋给该字段的值能表示「这是一份允许的直接复制」，所以**不存在构造出 `true` 的代码
-路径**。配套：`code` 经统一出口截断（默认 4000 字符）、渲染时强制打「仅学习参考 · 不得直接
-粘贴进用户项目」横幅、深读产出的是结构化**思路笔记**而非文件副本。
-
-同一段防搬运声明**同时**写进 agent tool 的 description 和系统提示词段，两处引用
-`src/contract.ts` 里同一个 `ANTI_COPY_STATEMENT` 常量 —— 不是两份内容相同的副本。
-
----
-
-## 切勿提交 `.env` / local 配置
-
-- `.env`、`.env.*`、`*.local.yml`、`*.local.json`、`*.token`、`*.key`、`*.pem`、
-  `credentials.json`、`secrets.*` **一律不入库**（`.gitignore` 已冻结这些条目）。
-- 仓库里只允许存在**模板**：`.env.example`（值全空）、`config.example.yml`（占位值）。
-- 任何真实 token / cookie / 代理凭据只能通过 DSH 凭证服务或本机环境变量提供。
-- 提交前自查：`git status --porcelain` 里不应出现 `.env`、`*.local.yml`、`*.token`。
 
 **token 存放位置（三重策略）**
 
@@ -207,34 +185,33 @@ loader 真正实例化时才执行 —— 这也意味着 `require(...)` 调用�
 
 本机（Windows + Node v24.19.0）实测结论，写死在此以免后人重复踩坑。
 
-### 通道可达性：会变，所以每次都实测
+### 最重要的一条：这台机器上 `node` 直连通道**完全没有出网能力**
 
-2026-10-03 的实测是「`node` 直连三个源全部 `fetch failed`」，而**同一台机器上** Harness 自己的
-`web_fetch`（即 `dsh-web` 通道）能拿到 `api.github.com` HTTP 200。当时的结论是：
+用 `scripts/smoke.ts`（`pnpm run smoke`）打真实端点，**三个源全部失败**：
+
+```
+[github] ok=false results=0 failure=network   — 网络请求失败：fetch failed
+[gitee]  ok=false results=0 failure=network   — 网络请求失败：fetch failed
+[csdn]   ok=false results=0 failure=network   — 网络请求失败：fetch failed
+```
+
+而**同一台机器上** Harness 自己的 `web_fetch`（即 `dsh-web` 通道）能拿到
+`api.github.com` 返回 HTTP 200。结论：
 
 > **`dsh-web` 是本机唯一可用的出网通道。** 插件默认优先 `dsh-web`、失败才回落 `node`
 > 的设计因此不是偏好问题，而是**本机的硬约束**。
 
-**2026-10-04 复测推翻了其中一半**：从本进程直连时 `api.github.com`（HTTP 200）、
-`gitee.com`（HTTP 200）、`so.csdn.net`（HTTP 200）都可达，只有 `github.com` 与
-`raw.githubusercontent.com` 仍是 TCP 443 超时（Harness 的 `web_fetch` 打 `github.com` 同样失败）。
+这直接解释了「本机代理」为什么不重要：代理设置只作用于 `node` 通道，而 `node` 通道在这
+台机器上根本不出去。反过来说，**如果你在别的机器上 `node` 通道可用，代理设置才有意义**。
 
-所以结论要按「会变的事实」来用：
-
-> **两条通道都可能通、也都可能不通。** 插件因此不把任何一条写死：仍默认优先 `dsh-web`、
-> 失败回落 `node`，并在 OAuth 之前做一次**运行期可达性预检**，把「这条主机现在通不通」
-> 当成读数而不是常量。
-
-### 端点可达性（2026-10-04 复测）
+### 端点可达性
 
 | 目标 | 经 `dsh-web` 通道 | 经 `node` 直连 |
 | --- | --- | --- |
-| `api.github.com` | **可达**（HTTP 200） | **可达**（HTTP 200） |
-| `github.com`（授权页/令牌页所在主域） | 不可达（`fetch failed`） | **不可达**（TCP 443 超时） |
+| `api.github.com` | **可达**（HTTP 200） | 不可达 |
 | `raw.githubusercontent.com` | 曾被观测到 HTTP 200 | 不可达 |
-| `gitee.com` | 可达 | **可达**（HTTP 200） |
-| `so.csdn.net` | 可达 | **可达**（HTTP 200） |
-| `blog.csdn.net` 文章页 | — | 带 UA/Referer 时 200，缺头部时偶发 HTTP 521 |
+| `ghproxy.net`（镜像） | **可用** | 不可达 |
+| 任意公网地址 | 可达 | `fetch failed` |
 
 ### 接口形态（与可达性无关，是服务端行为）
 
@@ -242,15 +219,10 @@ loader 真正实例化时才执行 —— 这也意味着 `require(...)` 调用�
 | --- | --- |
 | `gitee.com/api/v5/projects?q=...` | 返回 **404** —— 该接口不存在，禁止为它编造响应字段 |
 | `gitee.com/api/v5/search/repositories?q=...` | HTTP 200，但**匿名返回空数组**（需 token） |
-| `gitee.com/api/v5/search/code?q=...` | **404（HTML 页面不存在）** —— v5 没有代码搜索端点，本插件不使用它 |
-| `gitee.com/api/v5/repos/{owner}/{repo}/contents/{path}` | HTTP 200，公开仓库**匿名可读** |
-| `api.github.com/search/code?q=...`（匿名） | **401 `Requires authentication`** —— 查代码必须 token |
-| `so.csdn.net/api/v3/search?...` | HTTP 200，`result_vos[]` 有真实数据；30 条里约 6 条带 `body`，且**没有 `originalType` 字段** |
-| `blog.csdn.net` 文章页 | HTTP 200 且含真实 `<pre>` 代码块（实测 19 个）；缺 UA/Referer 时 HTTP **521** |
+| `so.csdn.net/api/v3/search?...` | HTTP 200，`result_vos[]` 有真实数据 |
 
-> Gitee 真实存在的搜索端点是 `/search/repositories`（需 `access_token`）。网上常见资料里写的
-> `/api/v5/projects?q=...` 实测 404，本插件不使用；`/search/code` 同样 404，而且这次不是
-> 「需要登录」——**端点根本不存在**。
+> Gitee 的搜索接口是 `/search/repositories` 与 `/search/code`（需 `access_token`）。
+> 网上常见资料里写的 `/api/v5/projects?q=...` 实测为 **404**，本插件不使用它。
 
 ### 怎么复核这些结论
 
@@ -458,54 +430,19 @@ include 进程序。DSH 升级后需要按实测复核。
 
 ## 已知限制
 
-- **`node` 直连通道的可达性会变，不要把它写死。** 2026-10-03 的实测是「三个源全部 `fetch failed`」，
-  而 2026-10-04 复测时 `api.github.com` / `gitee.com` / `so.csdn.net` 都可达，**只有 `github.com`
-  仍 TCP 443 超时**。所以插件不假定任何一条通道一定可用：默认仍优先 `dsh-web`（Harness 自带出网），
-  失败回落 `node`，并在 OAuth 前做**运行期可达性预检**。详见「已验证事实」。
-- **`github.com` 主域在本机不可达**（TCP 443 超时，Harness 的 `web_fetch` 同样失败）——
-  GitHub 的 OAuth 授权页 / 设备码页 / 令牌页在这台机器上打不开。插件会先说清楚，并给出替代路径；
-  `api.github.com` 仍可达，所以**带着已有 token 的 API 查询不受影响**。
-- **Gitee v5 没有代码搜索端点**（`/search/code` 实测 404）—— 插件不再为它发请求；仓库搜索需要
-  token（匿名返回空数组）；网页版代码搜索需要登录。
-- **CSDN 没有 OAuth** —— 登录态只有 cookie；搜索结果大多不带正文，代码要靠打开文章页；
-  缺 UA/Referer 时文章页会被 HTTP 521 反爬拦截。`so.csdn.net/robots.txt` 是 `Disallow: /`，
-  本插件只做用户显式触发的单次请求，不爬取。
-- **实验性 CDP 抓取有安全代价**：它会在本机开一个任何本地进程都能访问的浏览器调试端口。默认关闭，
-  需在设置里开启并在界面上显式确认。**两个入口**：
-  ①「凭据获取向导」→ CSDN → ② 令牌 / Cookie 手动导入 → CDP 抓取 —— 关着时会直接说明并提供
-  「启用 CDP 抓取并保存」按钮（点一下就落地，不用另找界面）；② 面板 →「CSDN 抓取选项」→ 勾选
-  「实验性：从本机浏览器读取 Cookie（CDP）」→ 自动/手动保存。
-- **不用自己带参数启动浏览器了**：打开上面的开关后，点 **「启动调试浏览器」** 即可（面板与向导里都有）
-  —— 插件先探测 `http://127.0.0.1:<端口>/json/version`，端口上已经有可调试的浏览器就**直接复用**，
-  否则自己找到 Chrome / Edge / Brave / Chromium（**用哪个由插件内定，不弹选择框**），用**独立配置目录**
-  （`$DSH_HOME/dsh-codehub-browser-<浏览器>`，因为 Chromium 会忽略被其它进程占用的 profile 上的调试
-  参数）加 `--remote-debugging-port=<端口> --remote-allow-origins=*` 启动，并把 CSDN 登录页打开；等端口
-  响应后回传 `webSocketDebuggerUrl`。你只需要在那个窗口里登录 CSDN，然后回来点「读取 Cookie」。
-  独立配置目录装着一份登录态，和 cookie 同级敏感，所以放在 `$DSH_HOME` 下（0700），不进仓库。
-- **配置保存的落点与优先级**：DSH 的 settings namespace 在本机拒绝本插件的写入（日志：
-  `Plugin entry "dsh-codehub" has no volatile fields`），所以保存的配置实际落在
-  `$DSH_HOME/dsh-codehub.json`（0600）的 `fallbackConfig`。优先级已修正为
-  **内置 / Profile 配置 < 该快照（你的保存） < settings namespace（可读时）**；旧顺序会让你的保存
-  被 schema 默认值盖掉——表现为面板一直显示「尚未决定」、`csdn.cdpEnabled` 勾了也读回 `false`。
-  遇到「保存了却没生效」，请使用包含该修正的构建。
-- **本机代理不作用于 `dsh-web` 通道**（仅 Node 直连传输生效）—— 见「本机代理」一节。
+- **`node` 直连通道在本机完全没有出网能力** —— 三个源的实测冒烟全部 `fetch failed`；插件因此
+  实际只能走 `dsh-web` 通道。详见「已验证事实」。
+- **本机代理不作用于 `dsh-web` 通道**，而本机也只有 `dsh-web` 可用 —— 所以代理设置在这台机器
+  上是空转的；见「本机代理」一节。
 - **`raw.githubusercontent.com` 在本机不稳定/不可直连** —— 建议配 raw 镜像基址。
+- **Gitee 搜索端点未登录时返回空数组** —— 不算失败，但需要你提供 token 才有结果。
 - **`lib/client.css` 目前不会自动注入页面**。DSH 客户端模块加载器能否解析 CSS 说明符无法在
   本机验证，而猜错的代价是**整个插件加载失败**（比「没样式」严重得多），所以样式表作为独立
   构建产物发布，待对照真实 GUI 确认后再接线。面板与设置页是语义 HTML + 渐进增强，
   样式未加载时全部控件仍可用可读。
-- **浏览器半边未经真实 GUI 验证**。host 半边有 typecheck、构建、单测、真实端点探针与**对运行中
-  DSH 的活体路由验证**背书；client 半边只有 typecheck + 构建 + 座位/产物检查
-  （`check-client-seats.mjs`、`verify-artifacts.mjs`）与源码级断言，真实 GUI 里的交互仍需人工确认。
-- **`boot-check` 的客户端探针路径在本机 DSH 版本上不可用**：它按 0.1.5 时代的
-  `/plugins/<id>/client.js` 取产物，而本机（0.2.0-rc.2）把客户端产物放在 harness 的 `/api` 围栏之后
-  （`/api/plugins/...` 无凭据访问返回 401），所以那条探针会报 404 `PROBLEM`，与插件本身无关。
-  客户端半边的等价门禁是 `node scripts/check-client-seats.mjs`（它按真实模块加载器契约加载
-  `lib/client.js`、驱动 `apply()` 并渲染全部座位）。此外，**`boot-check` 会以同名 profile 再起一个
-  host**：当桌面应用正在运行该 profile 时不要跑它，否则是端口/存储竞争。
-- **CDP 抓取未对真实 Chrome 验证**：`Storage.getCookies`（browser 作用域，先试）与
-  `Network.getCookies`（页面作用域，回退）两条路径都由注入式假 socket 覆盖，真机需要你先以
-  `--remote-debugging-port` 启动浏览器才可复核。
+- **浏览器半边未经真实 GUI 验证**。host 半边有 typecheck、构建、242 个单测与真实端点冒烟
+  背书；client 半边只有 typecheck + 构建 + 源码级断言（CSS 注入、槽位注册、`settingsScope`
+  可用性三处无法在无 GUI 的环境下确认）。
 
 ## 许可
 
