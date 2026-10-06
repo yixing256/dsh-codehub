@@ -1,13 +1,30 @@
 # ---------------------------------------------------------------------------
-# dsh-codehub — never commit build output, dependencies, or credentials.
-# The list below is frozen by the project brief: do not drop entries.
+# dsh-codehub — never commit dependencies, credentials, or THROWAWAY build
+# output. The list below is frozen by the project brief, with ONE deliberate
+# exception, argued here so it is not "fixed" back:
+#
+#   `lib/` used to be ignored. That made the GitHub install path unusable:
+#   DSH mounts this package as a git dependency (`github:yixing256/dsh-codehub`),
+#   pnpm fetches the repository as-is and never builds it, so `main`/`exports`
+#   (`lib/index.mjs`, `lib/client.js`) pointed at files that did not exist and
+#   the loader reported `failed to import`. Every GitHub-installed DSH plugin
+#   that does load (dsh-web-search-multi, dsh-plugin-console, …) commits its
+#   `lib/` for exactly this reason. So the RUNTIME bundles are shipped in the
+#   repository on purpose; only the transient intermediates stay ignored.
 # ---------------------------------------------------------------------------
 
-# Dependencies and build output
+# Dependencies and throwaway build output
 node_modules/
-lib/
 dist/
 coverage/
+
+# Transient intermediates only. `pnpm run build` deletes client.cjs and
+# client.css (the stylesheet is inlined into lib/client.js by
+# scripts/wrap-client.mjs), so these rules exist to catch a half-finished build,
+# never the shipped artifacts.
+lib/client.cjs
+lib/client.css
+lib/**/*.map
 
 # Logs
 *.log
